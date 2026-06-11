@@ -6,9 +6,7 @@
 
 use std::{cmp::Reverse, collections::BinaryHeap};
 
-/// Temporary gate key until the DAG module provides `OpKey`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct GateKey(pub u64);
+pub use crate::dag::OpKey;
 
 /// An engine event — a deferred state transition completing in a future cycle.
 ///
@@ -22,7 +20,7 @@ pub enum EngineEvent {
     /// Factory production attempt fails (abort/restart).
     FactoryFailed { factory_id: u16 },
     /// A gate's cycle cost has elapsed — it completes.
-    GateCompleted { gate: GateKey },
+    GateCompleted { gate: OpKey },
 }
 
 /// A timestamped, sequenced engine event for priority-queue ordering.
@@ -106,7 +104,9 @@ impl Default for EventQueue {
 
 #[cfg(test)]
 mod tests {
-    use super::{EngineEvent, EventQueue, GateKey};
+    use slotmap::SlotMap;
+
+    use super::{EngineEvent, EventQueue, OpKey};
 
     fn factory_produced(id: u16) -> EngineEvent {
         EngineEvent::FactoryProduced { factory_id: id }
@@ -134,10 +134,16 @@ mod tests {
 
     #[test]
     fn same_cycle_ordered_by_seq() {
+        // Create distinct OpKey values via a temporary SlotMap (can't construct them directly).
+        let mut map: SlotMap<OpKey, ()> = SlotMap::with_key();
+        let k0 = map.insert(());
+        let k1 = map.insert(());
+        let k2 = map.insert(());
+
         let mut q = EventQueue::new();
-        q.schedule(5, EngineEvent::GateCompleted { gate: GateKey(0) });
-        q.schedule(5, EngineEvent::GateCompleted { gate: GateKey(1) });
-        q.schedule(5, EngineEvent::GateCompleted { gate: GateKey(2) });
+        q.schedule(5, EngineEvent::GateCompleted { gate: k0 });
+        q.schedule(5, EngineEvent::GateCompleted { gate: k1 });
+        q.schedule(5, EngineEvent::GateCompleted { gate: k2 });
 
         // seq 0, 1, 2 — must come out in insertion order
         let seqs: Vec<u32> = (0..3).filter_map(|_| q.pop().map(|e| e.seq)).collect();

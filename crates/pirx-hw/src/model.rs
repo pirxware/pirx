@@ -1,6 +1,6 @@
 //! Hardware model types, deserialized from TOML.
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use thiserror::Error;
 
 // ── Errors ───────────────────────────────────────────────────────────────────
@@ -54,7 +54,7 @@ pub enum HardwareModelError {
 // ── Enums ────────────────────────────────────────────────────────────────────
 
 /// Quantum error-correcting code family.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub enum CodeType {
     #[serde(rename = "surface_code")]
     SurfaceCode,
@@ -65,7 +65,7 @@ pub enum CodeType {
 }
 
 /// Magic state distillation protocol.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub enum DistillationProtocol {
     #[serde(rename = "15-to-1")]
     FifteenToOne,
@@ -74,7 +74,7 @@ pub enum DistillationProtocol {
 }
 
 /// Routing model type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub enum RoutingModel {
     #[serde(rename = "scalar")]
     Scalar,

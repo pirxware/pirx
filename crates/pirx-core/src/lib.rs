@@ -5,6 +5,7 @@
 //! [`pirx_ir`] for the circuit representation and [`pirx_hw`] for the
 //! hardware model — nothing else.
 
+pub mod buffer;
 pub mod trace;
 
-// TODO: engine, dag, factory models, buffer, metrics, analysis
+// TODO: engine, dag, factory models, metrics, analysis

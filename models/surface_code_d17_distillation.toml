@@ -1,0 +1,28 @@
+[meta]
+name = "surface_code_d17_distillation_4fac"
+description = "Surface code at distance 17 with 4 distillation factories (15-to-1)"
+
+[qec]
+code_type = "surface_code"
+code_distance = 17
+physical_error_rate = 1e-3
+
+[timing]
+cycle_time_us = 1.0
+classical_feedback_latency_us = 1.0
+
+[factory]
+type = "distillation"
+count = 4
+protocol = "15-to-1"
+cycles_per_round = 18
+rounds = 3
+abort_probability = 0.0015
+
+[injection]
+error_probability = 0.5
+fixup_cost_cycles = 1
+
+[buffer]
+capacity = 8
+preload = 0

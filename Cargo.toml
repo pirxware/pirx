@@ -1,0 +1,90 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/pirx-ir",
+    "crates/pirx-hw",
+    "crates/pirx-core",
+    "crates/pirx-adapters",
+    "crates/pirx-cli",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.88"
+license = "Apache-2.0"
+authors = ["m2papierz@gmail.com"]
+repository = "https://github.com/pirxware/pirx"
+homepage = "https://github.com/pirxware/pirx"
+
+[workspace.dependencies]
+# Internal crates
+pirx-ir = { path = "crates/pirx-ir" }
+pirx-hw = { path = "crates/pirx-hw" }
+pirx-core = { path = "crates/pirx-core" }
+pirx-adapters = { path = "crates/pirx-adapters" }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Error handling
+thiserror = "2"
+
+# Arena / data structures
+slotmap = { version = "1", features = ["serde"] }
+smallvec = { version = "1", features = ["serde", "union"] }
+
+# Randomness
+rand = "0.8"
+rand_distr = "0.4"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Parallel sensitivity sweep
+rayon = "1"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "warn"
+cast_possible_truncation = "warn"
+cast_sign_loss = "warn"
+cast_lossless = "warn"
+large_enum_variant = "warn"
+needless_pass_by_value = "warn"
+cloned_instead_of_copied = "warn"
+redundant_closure_for_method_calls = "warn"
+manual_let_else = "warn"
+implicit_clone = "warn"
+trivially_copy_pass_by_ref = "warn"
+unnecessary_wraps = "warn"
+
+# ── Build profiles ─────────────────────────────────────────────────────────────
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.test]
+inherits = "dev"
+
+[profile.release]
+strip = true
+lto = "fat"
+codegen-units = 1
+overflow-checks = true
+panic = "abort"
+
+[profile.bench]
+inherits = "release"
+strip = false
+debug = 2

@@ -1,0 +1,17 @@
+[package]
+name = "pirx-adapters"
+version = "0.1.0"
+publish = false
+description = "Framework adapters: convert external circuit formats to Profiler IR"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+pirx-ir = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

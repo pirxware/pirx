@@ -1,0 +1,20 @@
+# Build
+/target/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Trurlic artifacts
+.trurlic/
+
+# Coding tools
+.claude
+CLAUDE.md

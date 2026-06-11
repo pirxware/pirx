@@ -1,0 +1,26 @@
+[meta]
+name = "surface_code_d17_cultivation_12fac"
+description = "Surface code at distance 17 with 12 cultivation patches"
+
+[qec]
+code_type = "surface_code"
+code_distance = 17
+physical_error_rate = 1e-3
+
+[timing]
+cycle_time_us = 1.0
+classical_feedback_latency_us = 1.0
+
+[factory]
+type = "cultivation"
+count = 12
+lambda_raw = 0.00227
+fault_distance = 3
+
+[injection]
+error_probability = 0.5
+fixup_cost_cycles = 1
+
+[buffer]
+capacity = 8
+preload = 0

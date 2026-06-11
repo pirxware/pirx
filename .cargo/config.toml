@@ -1,0 +1,33 @@
+# ── Fast linker ──────────────────────────────────────────────────────────────
+#
+# lld is the default below — widely available, significant speedup.
+#   Linux: sudo apt install clang lld
+#
+# For even faster linking, install mold and add to ~/.cargo/config.toml:
+#   [target.x86_64-unknown-linux-gnu]
+#   linker = "clang"
+#   rustflags = ["-C", "link-arg=-fuse-ld=mold", "-C", "split-debuginfo=unpacked"]
+
+# ── Linux x86-64 ────────────────────────────────────────────────────────────
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=lld", "-C", "split-debuginfo=unpacked"]
+
+# ── Linux aarch64 ───────────────────────────────────────────────────────────
+[target.aarch64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=lld", "-C", "split-debuginfo=unpacked"]
+
+# ── macOS ───────────────────────────────────────────────────────────────────
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "split-debuginfo=unpacked"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "split-debuginfo=unpacked"]
+
+# ── Windows MSVC ────────────────────────────────────────────────────────────
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld"
+
+[target.aarch64-pc-windows-msvc]
+linker = "rust-lld"

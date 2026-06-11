@@ -1,0 +1,25 @@
+[package]
+name = "pirx-cli"
+version = "0.1.0"
+publish = false
+description = "CLI binary for the Pirx execution profiler"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "pirx"
+path = "src/main.rs"
+
+[dependencies]
+pirx-ir = { workspace = true }
+pirx-hw = { workspace = true }
+pirx-core = { workspace = true }
+pirx-adapters = { workspace = true }
+clap = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

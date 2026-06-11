@@ -1,0 +1,33 @@
+[package]
+name = "pirx-core"
+version = "0.1.0"
+publish = false
+description = "DES engine, factory models, trace collection, and analysis"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+pirx-ir = { workspace = true }
+pirx-hw = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+slotmap = { workspace = true }
+smallvec = { workspace = true }
+rand = { workspace = true }
+rand_distr = { workspace = true }
+thiserror = { workspace = true }
+rayon = { workspace = true }
+
+[dev-dependencies]
+proptest = "1"
+codspeed-criterion-compat = { version = "2", default-features = false }
+
+[lints]
+workspace = true
+
+[[bench]]
+name = "engine"
+harness = false

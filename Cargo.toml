@@ -6,6 +6,7 @@ members = [
     "crates/pirx-core",
     "crates/pirx-adapters",
     "crates/pirx-cli",
+    "crates/pirx-testkit",
 ]
 
 [workspace.package]
@@ -22,6 +23,7 @@ pirx-ir = { path = "crates/pirx-ir" }
 pirx-hw = { path = "crates/pirx-hw" }
 pirx-core = { path = "crates/pirx-core" }
 pirx-adapters = { path = "crates/pirx-adapters" }
+pirx-testkit = { path = "crates/pirx-testkit" }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

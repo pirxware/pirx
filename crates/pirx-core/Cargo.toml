@@ -26,6 +26,7 @@ rayon = { workspace = true }
 [dev-dependencies]
 pirx-ir = { workspace = true }
 pirx-hw = { workspace = true }
+pirx-testkit = { workspace = true }
 smallvec = { workspace = true }
 proptest = "1"
 codspeed-criterion-compat = { version = "2", default-features = false }

@@ -12,3 +12,8 @@ pub mod engine;
 pub mod events;
 pub mod factory;
 pub mod trace;
+
+// Re-export primary types for downstream ergonomics.
+pub use analysis::{BottleneckType, ExecutionProfile, ProfileAnalyzer, StallRecord};
+pub use engine::{Engine, EngineConfig, EngineError};
+pub use trace::{Trace, TraceEvent, TraceEventKind};

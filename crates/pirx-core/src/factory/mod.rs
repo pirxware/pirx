@@ -98,7 +98,7 @@ pub fn create_factories(
 #[cfg(test)]
 #[allow(clippy::panic, clippy::unwrap_used)]
 mod tests {
-    use pirx_hw::model::{CodeType, FactoryConfig, QecConfig};
+    use pirx_hw::model::{DistillationProtocol, FactoryConfig};
 
     use super::create_factories;
 
@@ -113,21 +113,15 @@ mod tests {
     fn distillation_config(count: u32) -> FactoryConfig {
         FactoryConfig::Distillation {
             count,
-            protocol: pirx_hw::model::DistillationProtocol::FifteenToOne,
+            protocol: DistillationProtocol::FifteenToOne,
             cycles_per_round: 100,
             rounds: 3,
             abort_probability: 0.0,
         }
     }
 
-    fn qec() -> QecConfig {
-        QecConfig {
-            code_type: CodeType::SurfaceCode,
-            code_distance: 17,
-            physical_error_rate: 1e-3,
-            error_correction_threshold: 0.01,
-            logical_error_prefactor: 0.038,
-        }
+    fn qec() -> pirx_hw::model::QecConfig {
+        pirx_testkit::surface_code_qec(17)
     }
 
     #[test]

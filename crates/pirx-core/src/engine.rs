@@ -466,98 +466,43 @@ impl Engine {
     clippy::indexing_slicing
 )]
 mod tests {
-    use pirx_hw::RoutingConfig;
-    use pirx_hw::model::{
-        BufferConfig, CodeType, FactoryConfig, HardwareModel, InjectionConfig, MetaConfig,
-        QecConfig, TimingConfig,
-    };
-    use pirx_ir::circuit::{CircuitMetadata, OpKind as IrOpKind, Operation, ProfilerCircuit};
-    use smallvec::smallvec;
+    use pirx_hw::model::{BufferConfig, FactoryConfig};
 
     use super::{Engine, EngineConfig, EngineError};
-
-    // ── Fixtures ─────────────────────────────────────────────────────────────
-
-    fn cultivation_hw() -> HardwareModel {
-        HardwareModel {
-            meta: MetaConfig {
-                name: "test-cultivation".into(),
-                description: String::new(),
-            },
-            qec: QecConfig {
-                code_type: CodeType::SurfaceCode,
-                code_distance: 7,
-                physical_error_rate: 1e-3,
-                error_correction_threshold: 0.01,
-                logical_error_prefactor: 0.038,
-            },
-            timing: TimingConfig {
-                cycle_time_us: 1.0,
-                measurement_time_us: 0.5,
-                classical_feedback_latency_us: 1.0,
-            },
-            factory: FactoryConfig::Cultivation {
-                count: 1,
-                lambda_raw: 0.002,
-                fault_distance: 3,
-            },
-            injection: InjectionConfig {
-                error_probability: 0.5,
-                fixup_cost_cycles: 2,
-            },
-            routing: RoutingConfig::default(),
-            buffer: BufferConfig {
-                capacity: 4,
-                preload: 0,
-            },
-        }
-    }
-
-    fn single_clifford() -> ProfilerCircuit {
-        ProfilerCircuit {
-            ops: vec![Operation {
-                id: 0,
-                kind: IrOpKind::Clifford,
-                qubits: smallvec![0],
-            }],
-            deps: vec![],
-            qubit_count: 1,
-            metadata: CircuitMetadata {
-                name: "smoke".into(),
-                source_framework: "test".into(),
-                t_count: 0,
-                clifford_count: 1,
-                rotation_count: 0,
-                depth: 1,
-            },
-        }
-    }
 
     // ── Construction validation ───────────────────────────────────────────────
 
     #[test]
     fn rejects_zero_factories() {
-        let mut hw = cultivation_hw();
+        let mut hw = pirx_testkit::cultivation_hw();
         hw.factory = FactoryConfig::Cultivation {
             count: 0,
             lambda_raw: 0.002,
             fault_distance: 3,
         };
         assert!(matches!(
-            Engine::new(&single_clifford(), hw, EngineConfig { seed: 0 }),
+            Engine::new(
+                &pirx_testkit::single_clifford(),
+                hw,
+                EngineConfig { seed: 0 }
+            ),
             Err(EngineError::NoFactories)
         ));
     }
 
     #[test]
     fn rejects_zero_buffer() {
-        let mut hw = cultivation_hw();
+        let mut hw = pirx_testkit::cultivation_hw();
         hw.buffer = BufferConfig {
             capacity: 0,
             preload: 0,
         };
         assert!(matches!(
-            Engine::new(&single_clifford(), hw, EngineConfig { seed: 0 }),
+            Engine::new(
+                &pirx_testkit::single_clifford(),
+                hw,
+                EngineConfig { seed: 0 }
+            ),
             Err(EngineError::ZeroBuffer)
         ));
     }
@@ -568,11 +513,12 @@ mod tests {
     /// terminate, produce a non-empty trace, and advance at least one cycle.
     #[test]
     fn smoke_single_clifford_cultivation() {
-        let circuit = single_clifford();
-        let hw = cultivation_hw();
-        let config = EngineConfig { seed: 42 };
-
-        let engine = Engine::new(&circuit, hw, config).expect("valid engine");
+        let engine = Engine::new(
+            &pirx_testkit::single_clifford(),
+            pirx_testkit::cultivation_hw(),
+            EngineConfig { seed: 42 },
+        )
+        .expect("valid engine");
         let trace = engine.run();
 
         assert!(

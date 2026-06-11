@@ -1,0 +1,18 @@
+[package]
+name = "pirx-testkit"
+version = "0.1.0"
+publish = false
+description = "Shared test fixtures for the pirx workspace"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+pirx-hw = { workspace = true }
+pirx-ir = { workspace = true }
+smallvec = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,7 +1,7 @@
 //! Integration tests for the DES engine.
 //!
-//! Hardware models are loaded from TOML fixtures via `include_str!`.
-//! Circuits are built by hand from `pirx_ir` types.
+//! TOML-loaded hardware models exercise the full parsing pipeline.
+//! Circuits and manual hardware variants come from `pirx_testkit`.
 
 #![allow(
     clippy::unwrap_used,
@@ -10,186 +10,21 @@
     clippy::indexing_slicing
 )]
 
-use pirx_core::{
-    engine::{Engine, EngineConfig},
-    trace::TraceEventKind,
-};
-use pirx_hw::{
-    RoutingConfig,
-    model::{
-        BufferConfig, CodeType, DistillationProtocol, FactoryConfig, HardwareModel,
-        InjectionConfig, MetaConfig, QecConfig, TimingConfig, load,
-    },
-};
-use pirx_ir::circuit::{CircuitMetadata, Dependency, OpKind, Operation, ProfilerCircuit};
-use smallvec::smallvec;
+use pirx_core::engine::{Engine, EngineConfig};
+use pirx_core::trace::TraceEventKind;
+use pirx_hw::model::load;
 
 // ── Hardware fixtures ─────────────────────────────────────────────────────────
 
 const CULTIVATION_TOML: &str = include_str!("../../../models/surface_code_d17_cultivation.toml");
 const DISTILLATION_TOML: &str = include_str!("../../../models/surface_code_d17_distillation.toml");
 
-fn cultivation_hw() -> HardwareModel {
+fn cultivation_hw() -> pirx_hw::model::HardwareModel {
     load(CULTIVATION_TOML).unwrap()
 }
 
-fn distillation_hw() -> HardwareModel {
+fn distillation_hw() -> pirx_hw::model::HardwareModel {
     load(DISTILLATION_TOML).unwrap()
-}
-
-/// Minimal distillation hardware: deterministic 54-cycle production, no aborts.
-///
-/// `abort_probability = 0.0` so every production round succeeds.
-/// `cycles_per_round = 18, rounds = 3` → first magic state at cycle 54, then every 54 cycles.
-fn minimal_distillation_hw(
-    factory_count: u32,
-    buffer_capacity: u32,
-    preload: u32,
-) -> HardwareModel {
-    HardwareModel {
-        meta: MetaConfig {
-            name: "test-minimal".into(),
-            description: String::new(),
-        },
-        qec: QecConfig {
-            code_type: CodeType::SurfaceCode,
-            code_distance: 7,
-            physical_error_rate: 1e-3,
-            error_correction_threshold: 0.01,
-            logical_error_prefactor: 0.038,
-        },
-        timing: TimingConfig {
-            cycle_time_us: 1.0,
-            measurement_time_us: 0.5,
-            classical_feedback_latency_us: 1.0,
-        },
-        factory: FactoryConfig::Distillation {
-            count: factory_count,
-            protocol: DistillationProtocol::FifteenToOne,
-            cycles_per_round: 18,
-            rounds: 3,
-            abort_probability: 0.0,
-        },
-        injection: InjectionConfig {
-            error_probability: 0.5,
-            fixup_cost_cycles: 1,
-        },
-        routing: RoutingConfig::default(),
-        buffer: BufferConfig {
-            capacity: buffer_capacity,
-            preload,
-        },
-    }
-}
-
-// ── Circuit builders ──────────────────────────────────────────────────────────
-
-fn blank_meta(name: &str) -> CircuitMetadata {
-    CircuitMetadata {
-        name: name.into(),
-        source_framework: "test".into(),
-        t_count: 0,
-        clifford_count: 0,
-        rotation_count: 0,
-        depth: 1,
-    }
-}
-
-fn circuit_clifford() -> ProfilerCircuit {
-    ProfilerCircuit {
-        ops: vec![Operation {
-            id: 0,
-            kind: OpKind::Clifford,
-            qubits: smallvec![0],
-        }],
-        deps: vec![],
-        qubit_count: 1,
-        metadata: blank_meta("clifford"),
-    }
-}
-
-fn circuit_t_gate() -> ProfilerCircuit {
-    ProfilerCircuit {
-        ops: vec![Operation {
-            id: 0,
-            kind: OpKind::TGate,
-            qubits: smallvec![0],
-        }],
-        deps: vec![],
-        qubit_count: 1,
-        metadata: blank_meta("t-gate"),
-    }
-}
-
-fn circuit_two_t_gates() -> ProfilerCircuit {
-    ProfilerCircuit {
-        ops: vec![
-            Operation {
-                id: 0,
-                kind: OpKind::TGate,
-                qubits: smallvec![0],
-            },
-            Operation {
-                id: 1,
-                kind: OpKind::TGate,
-                qubits: smallvec![1],
-            },
-        ],
-        deps: vec![],
-        qubit_count: 2,
-        metadata: blank_meta("two-t-gates"),
-    }
-}
-
-/// Clifford(0) → TGate(1) → Measurement(2) linear chain.
-fn circuit_chain() -> ProfilerCircuit {
-    ProfilerCircuit {
-        ops: vec![
-            Operation {
-                id: 0,
-                kind: OpKind::Clifford,
-                qubits: smallvec![0],
-            },
-            Operation {
-                id: 1,
-                kind: OpKind::TGate,
-                qubits: smallvec![0],
-            },
-            Operation {
-                id: 2,
-                kind: OpKind::Measurement,
-                qubits: smallvec![0],
-            },
-        ],
-        deps: vec![Dependency { from: 0, to: 1 }, Dependency { from: 1, to: 2 }],
-        qubit_count: 1,
-        metadata: blank_meta("chain"),
-    }
-}
-
-fn circuit_three_cliffords() -> ProfilerCircuit {
-    ProfilerCircuit {
-        ops: vec![
-            Operation {
-                id: 0,
-                kind: OpKind::Clifford,
-                qubits: smallvec![0],
-            },
-            Operation {
-                id: 1,
-                kind: OpKind::Clifford,
-                qubits: smallvec![1],
-            },
-            Operation {
-                id: 2,
-                kind: OpKind::Clifford,
-                qubits: smallvec![2],
-            },
-        ],
-        deps: vec![],
-        qubit_count: 3,
-        metadata: blank_meta("three-cliffords"),
-    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -201,7 +36,7 @@ fn circuit_three_cliffords() -> ProfilerCircuit {
 #[test]
 fn single_clifford() {
     let trace = Engine::new(
-        &circuit_clifford(),
+        &pirx_testkit::single_clifford(),
         cultivation_hw(),
         EngineConfig { seed: 0 },
     )
@@ -241,7 +76,7 @@ fn single_t_gate_served_immediately() {
     let mut hw = cultivation_hw();
     hw.buffer.preload = 1;
 
-    let trace = Engine::new(&circuit_t_gate(), hw, EngineConfig { seed: 0 })
+    let trace = Engine::new(&pirx_testkit::single_t_gate(), hw, EngineConfig { seed: 0 })
         .unwrap()
         .run();
 
@@ -265,11 +100,15 @@ fn single_t_gate_served_immediately() {
 /// the stalled gate with wait=54.
 #[test]
 fn t_gate_stalls_then_served() {
-    let hw = minimal_distillation_hw(1, 1, 0);
+    let hw = pirx_testkit::deterministic_distillation_hw(1, 1, 0);
 
-    let trace = Engine::new(&circuit_two_t_gates(), hw, EngineConfig { seed: 0 })
-        .unwrap()
-        .run();
+    let trace = Engine::new(
+        &pirx_testkit::two_parallel_t_gates(),
+        hw,
+        EngineConfig { seed: 0 },
+    )
+    .unwrap()
+    .run();
 
     assert!(
         trace
@@ -299,9 +138,13 @@ fn chain_respects_dependencies() {
     // Pre-load the buffer so the T-gate is served without waiting on factory timing.
     hw.buffer.preload = 1;
 
-    let trace = Engine::new(&circuit_chain(), hw, EngineConfig { seed: 0 })
-        .unwrap()
-        .run();
+    let trace = Engine::new(
+        &pirx_testkit::clifford_t_measurement_chain(),
+        hw,
+        EngineConfig { seed: 0 },
+    )
+    .unwrap()
+    .run();
 
     let completed_cycles: Vec<u64> = trace
         .events
@@ -340,7 +183,7 @@ fn chain_respects_dependencies() {
 #[test]
 fn parallel_cliffords() {
     let trace = Engine::new(
-        &circuit_three_cliffords(),
+        &pirx_testkit::parallel_cliffords(3),
         cultivation_hw(),
         EngineConfig { seed: 0 },
     )
@@ -379,7 +222,7 @@ fn parallel_cliffords() {
 /// 6. Determinism: identical seed + circuit + hardware → identical trace.
 #[test]
 fn determinism() {
-    let circuit = circuit_chain();
+    let circuit = pirx_testkit::clifford_t_measurement_chain();
     let config = EngineConfig { seed: 42 };
 
     let t1 = Engine::new(&circuit, cultivation_hw(), config)
@@ -411,7 +254,7 @@ fn determinism() {
 /// We scan the first 200 seeds to find a deterministic one that does.
 #[test]
 fn injection_fixup_extends_trace() {
-    let circuit = circuit_t_gate();
+    let circuit = pirx_testkit::single_t_gate();
 
     let trace = (0u64..200)
         .find_map(|seed| {

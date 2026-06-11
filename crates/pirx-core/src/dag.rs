@@ -426,101 +426,30 @@ fn detect_cycle(
     clippy::panic
 )]
 mod tests {
-    use pirx_hw::RoutingConfig;
-    use pirx_hw::model::{
-        BufferConfig, CodeType, DistillationProtocol, FactoryConfig, HardwareModel,
-        InjectionConfig, MetaConfig, QecConfig, TimingConfig,
-    };
-    use pirx_ir::circuit::{
-        CircuitMetadata, Dependency, OpKind as IrOpKind, Operation, ProfilerCircuit,
-    };
+    use pirx_ir::circuit::{Dependency, OpKind as IrOpKind, Operation, ProfilerCircuit};
     use smallvec::smallvec;
 
     use super::*;
 
     // ── Fixtures ────────────────────────────────────────────────────────────
 
-    fn meta() -> CircuitMetadata {
-        CircuitMetadata {
-            name: "test".into(),
-            source_framework: "test".into(),
-            t_count: 0,
-            clifford_count: 0,
-            rotation_count: 0,
-            depth: 0,
-        }
-    }
-
-    fn minimal_hw() -> HardwareModel {
-        HardwareModel {
-            meta: MetaConfig {
-                name: "test".into(),
-                description: String::new(),
-            },
-            qec: QecConfig {
-                code_type: CodeType::SurfaceCode,
-                code_distance: 7,
-                physical_error_rate: 1e-3,
-                error_correction_threshold: 0.01,
-                logical_error_prefactor: 0.038,
-            },
-            timing: TimingConfig {
-                cycle_time_us: 1.0,
-                measurement_time_us: 0.5,
-                classical_feedback_latency_us: 1.0,
-            },
-            factory: FactoryConfig::Distillation {
-                count: 1,
-                protocol: DistillationProtocol::FifteenToOne,
-                cycles_per_round: 10,
-                rounds: 3,
-                abort_probability: 0.01,
-            },
-            injection: InjectionConfig {
-                error_probability: 0.5,
-                fixup_cost_cycles: 2,
-            },
-            routing: RoutingConfig::default(),
-            buffer: BufferConfig {
-                capacity: 4,
-                preload: 0,
-            },
-        }
-    }
-
-    /// Build an n-op linear chain: op(0) → op(1) → … → op(n-1).
-    fn chain_circuit(n: u32) -> ProfilerCircuit {
-        let ops = (0..n)
-            .map(|i| Operation {
-                id: u64::from(i),
-                kind: IrOpKind::Clifford,
-                qubits: smallvec![0],
-            })
-            .collect();
-        let deps = (0..n.saturating_sub(1))
-            .map(|i| Dependency {
-                from: u64::from(i),
-                to: u64::from(i + 1),
-            })
-            .collect();
-        ProfilerCircuit {
-            ops,
-            deps,
-            qubit_count: 1,
-            metadata: meta(),
-        }
+    /// Distillation hardware with fixup_cost=2, needed by inject_fixup tests.
+    fn hw() -> pirx_hw::model::HardwareModel {
+        let mut hw = pirx_testkit::distillation_hw();
+        hw.injection.fixup_cost_cycles = 2;
+        hw
     }
 
     // ── Construction ────────────────────────────────────────────────────────
 
     #[test]
     fn from_circuit_empty_rejected() {
-        let hw = minimal_hw();
+        let hw = hw();
         let circuit = ProfilerCircuit {
             ops: vec![],
             deps: vec![],
             qubit_count: 0,
-            metadata: meta(),
+            metadata: pirx_testkit::blank_meta("test"),
         };
         assert!(matches!(
             Dag::from_circuit(&circuit, &hw),
@@ -530,7 +459,7 @@ mod tests {
 
     #[test]
     fn from_circuit_cycle_rejected() {
-        let hw = minimal_hw();
+        let hw = hw();
         // A(0) → B(1) → A(0) — cycle bypasses pirx-ir validation intentionally.
         let circuit = ProfilerCircuit {
             ops: vec![
@@ -547,7 +476,7 @@ mod tests {
             ],
             deps: vec![Dependency { from: 0, to: 1 }, Dependency { from: 1, to: 0 }],
             qubit_count: 1,
-            metadata: meta(),
+            metadata: pirx_testkit::blank_meta("test"),
         };
         assert!(matches!(
             Dag::from_circuit(&circuit, &hw),
@@ -557,8 +486,8 @@ mod tests {
 
     #[test]
     fn from_circuit_simple_chain() {
-        let hw = minimal_hw();
-        let dag = Dag::from_circuit(&chain_circuit(2), &hw).expect("valid chain");
+        let hw = hw();
+        let dag = Dag::from_circuit(&pirx_testkit::clifford_chain(2), &hw).expect("valid chain");
         assert_eq!(dag.op_count(), 2);
         let roots = dag.initial_ready_set();
         assert_eq!(roots.len(), 1);
@@ -574,7 +503,7 @@ mod tests {
 
     #[test]
     fn initial_ready_set_roots_only() {
-        let hw = minimal_hw();
+        let hw = hw();
         // A(0) and B(1) both → C(2). Only A and B are roots.
         let circuit = ProfilerCircuit {
             ops: vec![
@@ -596,7 +525,7 @@ mod tests {
             ],
             deps: vec![Dependency { from: 0, to: 2 }, Dependency { from: 1, to: 2 }],
             qubit_count: 2,
-            metadata: meta(),
+            metadata: pirx_testkit::blank_meta("test"),
         };
         let dag = Dag::from_circuit(&circuit, &hw).expect("valid");
         let roots = dag.initial_ready_set();
@@ -608,7 +537,7 @@ mod tests {
 
     #[test]
     fn initial_ready_set_parallel() {
-        let hw = minimal_hw();
+        let hw = hw();
         // Three independent ops — all are roots.
         let circuit = ProfilerCircuit {
             ops: vec![
@@ -630,7 +559,7 @@ mod tests {
             ],
             deps: vec![],
             qubit_count: 3,
-            metadata: meta(),
+            metadata: pirx_testkit::blank_meta("test"),
         };
         let dag = Dag::from_circuit(&circuit, &hw).expect("valid");
         assert_eq!(dag.initial_ready_set().len(), 3);
@@ -640,9 +569,9 @@ mod tests {
 
     #[test]
     fn release_successors_decrements() {
-        let hw = minimal_hw();
+        let hw = hw();
         // A → B → C
-        let mut dag = Dag::from_circuit(&chain_circuit(3), &hw).expect("valid");
+        let mut dag = Dag::from_circuit(&pirx_testkit::clifford_chain(3), &hw).expect("valid");
         let roots = dag.initial_ready_set();
         assert_eq!(roots.len(), 1);
         let key_a = roots[0];
@@ -669,9 +598,9 @@ mod tests {
 
     #[test]
     fn inject_fixup_rewires() {
-        let hw = minimal_hw();
+        let hw = hw();
         // A(0) → B(1) → C(2)
-        let mut dag = Dag::from_circuit(&chain_circuit(3), &hw).expect("valid");
+        let mut dag = Dag::from_circuit(&pirx_testkit::clifford_chain(3), &hw).expect("valid");
 
         let key_a = dag.initial_ready_set()[0];
         let key_b = dag
@@ -721,7 +650,7 @@ mod tests {
 
         // Fixup node has the correct cycle_cost from hw.injection.
         let fixup_data = dag.get(key_f).expect("fixup data");
-        assert_eq!(fixup_data.cycle_cost, 2); // minimal_hw fixup_cost_cycles = 2
+        assert_eq!(fixup_data.cycle_cost, 2); // hw() sets fixup_cost_cycles = 2
         assert!(matches!(fixup_data.kind, OpKind::Fixup));
     }
 }

@@ -594,6 +594,7 @@ dependencies = [
  "codspeed-criterion-compat",
  "pirx-hw",
  "pirx-ir",
+ "pirx-testkit",
  "proptest",
  "rand 0.8.6",
  "rand_distr",
@@ -621,6 +622,15 @@ dependencies = [
  "serde",
  "smallvec",
  "thiserror",
+]
+
+[[package]]
+name = "pirx-testkit"
+version = "0.1.0"
+dependencies = [
+ "pirx-hw",
+ "pirx-ir",
+ "smallvec",
 ]
 
 [[package]]

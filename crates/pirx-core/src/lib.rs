@@ -6,6 +6,7 @@
 //! hardware model — nothing else.
 
 pub mod buffer;
+pub mod events;
 pub mod trace;
 
 // TODO: engine, dag, factory models, metrics, analysis

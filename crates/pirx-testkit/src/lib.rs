@@ -159,9 +159,12 @@ pub fn single_clifford() -> ProfilerCircuit {
             id: 0,
             kind: OpKind::Clifford,
             qubits: smallvec![0],
+            initially_active: true,
         }],
         deps: vec![],
         qubit_count: 1,
+        qubit_positions: None,
+        hooks: vec![],
         metadata: CircuitMetadata {
             name: "single-clifford".into(),
             source_framework: "test".into(),
@@ -180,9 +183,12 @@ pub fn single_t_gate() -> ProfilerCircuit {
             id: 0,
             kind: OpKind::TGate,
             qubits: smallvec![0],
+            initially_active: true,
         }],
         deps: vec![],
         qubit_count: 1,
+        qubit_positions: None,
+        hooks: vec![],
         metadata: blank_meta("single-t-gate"),
     }
 }
@@ -196,15 +202,19 @@ pub fn two_parallel_t_gates() -> ProfilerCircuit {
                 id: 0,
                 kind: OpKind::TGate,
                 qubits: smallvec![0],
+                initially_active: true,
             },
             Operation {
                 id: 1,
                 kind: OpKind::TGate,
                 qubits: smallvec![1],
+                initially_active: true,
             },
         ],
         deps: vec![],
         qubit_count: 2,
+        qubit_positions: None,
+        hooks: vec![],
         metadata: blank_meta("two-parallel-t-gates"),
     }
 }
@@ -216,6 +226,7 @@ pub fn clifford_chain(n: u32) -> ProfilerCircuit {
             id: u64::from(i),
             kind: OpKind::Clifford,
             qubits: smallvec![0],
+            initially_active: true,
         })
         .collect();
     let deps = (0..n.saturating_sub(1))
@@ -228,6 +239,8 @@ pub fn clifford_chain(n: u32) -> ProfilerCircuit {
         ops,
         deps,
         qubit_count: 1,
+        qubit_positions: None,
+        hooks: vec![],
         metadata: blank_meta("clifford-chain"),
     }
 }
@@ -240,6 +253,7 @@ pub fn t_gate_chain(n: u32) -> ProfilerCircuit {
             id: u64::from(i),
             kind: OpKind::TGate,
             qubits: smallvec![0],
+            initially_active: true,
         })
         .collect();
     let deps: Vec<Dependency> = (0..n.saturating_sub(1))
@@ -252,6 +266,8 @@ pub fn t_gate_chain(n: u32) -> ProfilerCircuit {
         ops,
         deps,
         qubit_count: 1,
+        qubit_positions: None,
+        hooks: vec![],
         metadata: CircuitMetadata {
             name: "t-gate-chain".into(),
             source_framework: "test".into(),
@@ -272,20 +288,25 @@ pub fn clifford_t_measurement_chain() -> ProfilerCircuit {
                 id: 0,
                 kind: OpKind::Clifford,
                 qubits: smallvec![0],
+                initially_active: true,
             },
             Operation {
                 id: 1,
                 kind: OpKind::TGate,
                 qubits: smallvec![0],
+                initially_active: true,
             },
             Operation {
                 id: 2,
-                kind: OpKind::Measurement,
+                kind: OpKind::Measurement { hook: None },
                 qubits: smallvec![0],
+                initially_active: true,
             },
         ],
         deps: vec![Dependency { from: 0, to: 1 }, Dependency { from: 1, to: 2 }],
         qubit_count: 1,
+        qubit_positions: None,
+        hooks: vec![],
         metadata: blank_meta("clifford-t-measurement"),
     }
 }
@@ -298,12 +319,15 @@ pub fn parallel_cliffords(n: u32) -> ProfilerCircuit {
             id: u64::from(i),
             kind: OpKind::Clifford,
             qubits: smallvec![i],
+            initially_active: true,
         })
         .collect();
     ProfilerCircuit {
         ops,
         deps: vec![],
         qubit_count: n,
+        qubit_positions: None,
+        hooks: vec![],
         metadata: blank_meta("parallel-cliffords"),
     }
 }

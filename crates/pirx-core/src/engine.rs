@@ -5,12 +5,12 @@
 //! All stochastic decisions flow through an explicit `StdRng` seeded from
 //! [`EngineConfig::seed`], ensuring full reproducibility (same seed → same trace).
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 use pirx_hw::model::HardwareModel;
 use pirx_ir::circuit::ProfilerCircuit;
 use rand::{Rng as _, SeedableRng, rngs::StdRng};
-use slotmap::{Key as _, SecondaryMap};
+use slotmap::Key as _;
 use thiserror::Error;
 
 use crate::buffer::MagicStateBuffer;
@@ -54,8 +54,8 @@ pub enum EngineError {
     #[error("buffer capacity is zero")]
     ZeroBuffer,
 
-    #[error("Rz synthesis factory is not yet implemented")]
-    RzSynthesisNotImplemented,
+    #[error("factory creation failed: {0}")]
+    FactoryCreation(#[from] FactoryError),
 }
 
 impl From<DagError> for EngineError {
@@ -65,14 +65,6 @@ impl From<DagError> for EngineError {
             DagError::DanglingDependency => Self::DanglingDependency,
             DagError::CyclicDag => Self::CyclicDag,
             DagError::TooManyDistinctAngles(n) => Self::TooManyRotationAngles(n),
-        }
-    }
-}
-
-impl From<FactoryError> for EngineError {
-    fn from(err: FactoryError) -> Self {
-        match err {
-            FactoryError::RzSynthesisNotImplemented => Self::RzSynthesisNotImplemented,
         }
     }
 }
@@ -106,7 +98,7 @@ pub struct Engine {
     // Stalled T-gates: ready but waiting for a magic state
     stalled_gates: VecDeque<OpKey>,
     /// Cycle at which each gate entered the stall queue, for wait-time accounting.
-    stall_start: SecondaryMap<OpKey, u64>,
+    stall_start: HashMap<OpKey, u64>,
 
     // Termination tracking (total_ops grows when fixups are injected)
     total_ops: u64,
@@ -194,7 +186,7 @@ impl Engine {
             rng,
             seed: config.seed,
             stalled_gates: VecDeque::new(),
-            stall_start: SecondaryMap::new(),
+            stall_start: HashMap::new(),
             total_ops,
             completed_ops: 0,
             trace,
@@ -389,13 +381,14 @@ impl Engine {
 
     /// Serve as many stalled gates as the buffer allows (FIFO order).
     ///
-    /// Zero-allocation: pops from the front of `stalled_gates`, pushes back
-    /// the first unservable gate, and breaks — remaining gates keep their
-    /// position in the deque.
+    /// Stops as soon as the buffer is empty — once empty, no further gates
+    /// in the queue can be served this cycle.
     fn try_serve_stalled_gates(&mut self) {
+        let mut still_stalled: VecDeque<OpKey> = VecDeque::new();
+
         while let Some(gate) = self.stalled_gates.pop_front() {
             if self.buffer.try_dequeue() {
-                let stall_cycle = self.stall_start.remove(gate).unwrap_or(self.current_cycle);
+                let stall_cycle = self.stall_start.remove(&gate).unwrap_or(self.current_cycle);
                 let wait_u64 = self.current_cycle.saturating_sub(stall_cycle);
                 // Stall durations fit in u32 for any realistic simulation;
                 // saturate to MAX rather than truncate silently.
@@ -420,12 +413,16 @@ impl Engine {
                     EngineEvent::GateCompleted { gate },
                 );
             } else {
-                // Buffer exhausted — push this gate back and stop.
-                // All remaining gates in stalled_gates preserve their FIFO position.
-                self.stalled_gates.push_front(gate);
+                // Buffer exhausted — this gate and all remaining stalled gates
+                // cannot be served this cycle.
+                still_stalled.push_back(gate);
                 break;
             }
         }
+
+        // Preserve FIFO order: served slots are consumed, unserved remain.
+        still_stalled.extend(self.stalled_gates.drain(..));
+        self.stalled_gates = still_stalled;
     }
 
     /// Schedule the next production event for factory `factory_id`.
@@ -466,43 +463,101 @@ impl Engine {
     clippy::indexing_slicing
 )]
 mod tests {
-    use pirx_hw::model::{BufferConfig, FactoryConfig};
+    use pirx_hw::model::{
+        BufferConfig, FactoryConfig, HardwareModel, InjectionConfig, MetaConfig, QecConfig,
+        TimingConfig,
+    };
+    use pirx_hw::{CodeType, RoutingConfig};
+    use pirx_ir::circuit::{CircuitMetadata, OpKind as IrOpKind, Operation, ProfilerCircuit};
+    use smallvec::smallvec;
 
     use super::{Engine, EngineConfig, EngineError};
+
+    // ── Fixtures ─────────────────────────────────────────────────────────────
+
+    fn cultivation_hw() -> HardwareModel {
+        HardwareModel {
+            meta: MetaConfig {
+                name: "test-cultivation".into(),
+                description: String::new(),
+            },
+            qec: QecConfig {
+                code_type: CodeType::SurfaceCode,
+                code_distance: 7,
+                physical_error_rate: 1e-3,
+                error_correction_threshold: 0.01,
+                logical_error_prefactor: 0.038,
+            },
+            timing: TimingConfig {
+                cycle_time_us: 1.0,
+                measurement_time_us: 0.5,
+                classical_feedback_latency_us: 1.0,
+            },
+            factory: FactoryConfig::Cultivation {
+                count: 1,
+                lambda_raw: 0.002,
+                fault_distance: 3,
+            },
+            injection: InjectionConfig {
+                error_probability: 0.5,
+                fixup_cost_cycles: 2,
+            },
+            routing: RoutingConfig::default(),
+            buffer: BufferConfig {
+                capacity: 4,
+                preload: 0,
+            },
+        }
+    }
+
+    fn single_clifford() -> ProfilerCircuit {
+        ProfilerCircuit {
+            ops: vec![Operation {
+                id: 0,
+                kind: IrOpKind::Clifford,
+                qubits: smallvec![0],
+                initially_active: true,
+            }],
+            deps: vec![],
+            qubit_count: 1,
+            qubit_positions: None,
+            hooks: vec![],
+            metadata: CircuitMetadata {
+                name: "smoke".into(),
+                source_framework: "test".into(),
+                t_count: 0,
+                clifford_count: 1,
+                rotation_count: 0,
+                depth: 1,
+            },
+        }
+    }
 
     // ── Construction validation ───────────────────────────────────────────────
 
     #[test]
     fn rejects_zero_factories() {
-        let mut hw = pirx_testkit::cultivation_hw();
+        let mut hw = cultivation_hw();
         hw.factory = FactoryConfig::Cultivation {
             count: 0,
             lambda_raw: 0.002,
             fault_distance: 3,
         };
         assert!(matches!(
-            Engine::new(
-                &pirx_testkit::single_clifford(),
-                hw,
-                EngineConfig { seed: 0 }
-            ),
+            Engine::new(&single_clifford(), hw, EngineConfig { seed: 0 }),
             Err(EngineError::NoFactories)
         ));
     }
 
     #[test]
     fn rejects_zero_buffer() {
-        let mut hw = pirx_testkit::cultivation_hw();
+        let mut hw = cultivation_hw();
         hw.buffer = BufferConfig {
             capacity: 0,
             preload: 0,
         };
         assert!(matches!(
-            Engine::new(
-                &pirx_testkit::single_clifford(),
-                hw,
-                EngineConfig { seed: 0 }
-            ),
+            Engine::new(&single_clifford(), hw, EngineConfig { seed: 0 }),
             Err(EngineError::ZeroBuffer)
         ));
     }
@@ -513,12 +568,11 @@ mod tests {
     /// terminate, produce a non-empty trace, and advance at least one cycle.
     #[test]
     fn smoke_single_clifford_cultivation() {
-        let engine = Engine::new(
-            &pirx_testkit::single_clifford(),
-            pirx_testkit::cultivation_hw(),
-            EngineConfig { seed: 42 },
-        )
-        .expect("valid engine");
+        let circuit = single_clifford();
+        let hw = cultivation_hw();
+        let config = EngineConfig { seed: 42 };
+
+        let engine = Engine::new(&circuit, hw, config).expect("valid engine");
         let trace = engine.run();
 
         assert!(

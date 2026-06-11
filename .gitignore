@@ -18,3 +18,5 @@ Thumbs.db
 # Coding tools
 .claude
 CLAUDE.md
+.trurlic/.state/
+.mcp.json

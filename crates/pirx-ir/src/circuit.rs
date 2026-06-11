@@ -27,7 +27,11 @@ pub struct Operation {
 }
 
 /// Classification of a quantum operation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `PartialEq` but not `Eq`: the `Rotation` variant holds an `f64` angle, which does not
+/// implement `Eq` (NaN != NaN). Callers that need equality on non-Rotation variants may
+/// match exhaustively.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum OpKind {
     /// Clifford gate (H, S, CNOT, etc.) — no magic state consumed.
     Clifford,
@@ -35,8 +39,8 @@ pub enum OpKind {
     TGate,
     /// Pauli measurement.
     Measurement,
-    /// Arbitrary rotation Rz(θ) — consumes one rotation state.
-    Rotation { angle_index: u16 },
+    /// Arbitrary rotation Rz(θ) in radians — consumes one rotation state.
+    Rotation { angle: f64 },
 }
 
 /// Data dependency: `from` must complete before `to` can start.

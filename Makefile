@@ -1,4 +1,4 @@
-.PHONY: build build-release test check fmt audit ci setup clean
+.PHONY: build build-release test bench check fmt audit ci setup clean
 
 # ── Build ─────────────────────────────────────────────────────────────────────
 
@@ -22,6 +22,11 @@ check:
 
 test:
 	cargo test --workspace --locked
+
+# ── Bench ─────────────────────────────────────────────────────────────────────
+
+bench:
+	cargo bench --workspace
 
 # ── Audit ─────────────────────────────────────────────────────────────────────
 

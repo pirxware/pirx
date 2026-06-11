@@ -64,6 +64,7 @@ manual_let_else = "warn"
 implicit_clone = "warn"
 trivially_copy_pass_by_ref = "warn"
 unnecessary_wraps = "warn"
+used_underscore_binding = "warn"
 
 # ── Build profiles ─────────────────────────────────────────────────────────────
 
@@ -78,7 +79,7 @@ opt-level = 2
 inherits = "dev"
 
 [profile.release]
-strip = true
+strip = "symbols"
 lto = "fat"
 codegen-units = 1
 overflow-checks = true

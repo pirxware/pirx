@@ -23,7 +23,7 @@ rayon = { workspace = true }
 
 [dev-dependencies]
 proptest = "1"
-codspeed-criterion-compat = { version = "2", default-features = false }
+codspeed-criterion-compat = { version = "4", default-features = false }
 
 [lints]
 workspace = true

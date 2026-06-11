@@ -92,12 +92,13 @@ pub fn validate(circuit: &ProfilerCircuit) -> Result<(), ValidationError> {
         visited += 1;
         for dep in &circuit.deps {
             if dep.from == node
-                && let Some(count) = in_degree.get_mut(&dep.to) {
-                    *count -= 1;
-                    if *count == 0 {
-                        queue.push_back(dep.to);
-                    }
+                && let Some(count) = in_degree.get_mut(&dep.to)
+            {
+                *count -= 1;
+                if *count == 0 {
+                    queue.push_back(dep.to);
                 }
+            }
         }
     }
 

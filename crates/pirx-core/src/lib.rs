@@ -5,6 +5,7 @@
 //! [`pirx_ir`] for the circuit representation and [`pirx_hw`] for the
 //! hardware model — nothing else.
 
+pub mod analysis;
 pub mod buffer;
 pub mod dag;
 pub mod engine;

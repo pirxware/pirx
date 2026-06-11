@@ -1,6 +1,88 @@
 //! Hardware model types, deserialized from TOML.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+// ── Errors ───────────────────────────────────────────────────────────────────
+
+/// Errors from hardware model loading or validation.
+#[derive(Debug, Error)]
+pub enum HardwareModelError {
+    #[error("TOML parsing failed: {0}")]
+    Parse(#[from] toml::de::Error),
+
+    #[error("code distance must be odd and >= 3, got {0}")]
+    InvalidCodeDistance(u32),
+
+    #[error("physical error rate must be in (0, 1), got {0}")]
+    InvalidPhysicalErrorRate(f64),
+
+    #[error("error correction threshold must be in (0, 1), got {0}")]
+    InvalidErrorCorrectionThreshold(f64),
+
+    #[error("logical error prefactor must be > 0, got {0}")]
+    InvalidLogicalErrorPrefactor(f64),
+
+    #[error("cycle time must be > 0, got {0} µs")]
+    InvalidCycleTime(f64),
+
+    #[error("measurement time must be > 0, got {0} µs")]
+    InvalidMeasurementTime(f64),
+
+    #[error("classical feedback latency must be >= 0, got {0} µs")]
+    InvalidFeedbackLatency(f64),
+
+    #[error("factory count must be > 0")]
+    ZeroFactories,
+
+    #[error("buffer capacity must be > 0")]
+    ZeroBufferCapacity,
+
+    #[error("lambda_raw must be > 0 for cultivation factory, got {0}")]
+    InvalidLambdaRaw(f64),
+
+    #[error("abort probability must be in [0, 1], got {0}")]
+    InvalidAbortProbability(f64),
+
+    #[error("injection error probability must be in [0, 1], got {0}")]
+    InvalidInjectionProbability(f64),
+
+    #[error("routing overhead fraction must be in [0, 1], got {0}")]
+    InvalidOverheadFraction(f64),
+}
+
+// ── Enums ────────────────────────────────────────────────────────────────────
+
+/// Quantum error-correcting code family.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CodeType {
+    #[serde(rename = "surface_code")]
+    SurfaceCode,
+    #[serde(rename = "color_code")]
+    ColorCode,
+    #[serde(rename = "qldpc")]
+    Qldpc,
+}
+
+/// Magic state distillation protocol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DistillationProtocol {
+    #[serde(rename = "15-to-1")]
+    FifteenToOne,
+    #[serde(rename = "CCZ-to-2T")]
+    CczToTwoT,
+}
+
+/// Routing model type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RoutingModel {
+    #[serde(rename = "scalar")]
+    Scalar,
+    #[serde(rename = "graph")]
+    Graph,
+}
+
+// ── Model types ──────────────────────────────────────────────────────────────
 
 /// Complete hardware model specification.
 #[derive(Debug, Clone, Deserialize)]
@@ -14,6 +96,87 @@ pub struct HardwareModel {
     pub buffer: BufferConfig,
 }
 
+impl HardwareModel {
+    /// Validate all domain invariants.
+    ///
+    /// Called automatically by [`load`]. Callers constructing a `HardwareModel`
+    /// directly (e.g. in tests) may call this explicitly for defence-in-depth.
+    pub fn validate(&self) -> Result<(), HardwareModelError> {
+        // QEC
+        if self.qec.code_distance < 3 || self.qec.code_distance.is_multiple_of(2) {
+            return Err(HardwareModelError::InvalidCodeDistance(
+                self.qec.code_distance,
+            ));
+        }
+        let p = self.qec.physical_error_rate;
+        if p <= 0.0 || p >= 1.0 || p.is_nan() {
+            return Err(HardwareModelError::InvalidPhysicalErrorRate(p));
+        }
+        let t = self.qec.error_correction_threshold;
+        if t <= 0.0 || t >= 1.0 || t.is_nan() {
+            return Err(HardwareModelError::InvalidErrorCorrectionThreshold(t));
+        }
+        let pf = self.qec.logical_error_prefactor;
+        if pf <= 0.0 || pf.is_nan() {
+            return Err(HardwareModelError::InvalidLogicalErrorPrefactor(pf));
+        }
+
+        // Timing
+        let ct = self.timing.cycle_time_us;
+        if ct <= 0.0 || ct.is_nan() {
+            return Err(HardwareModelError::InvalidCycleTime(ct));
+        }
+        let mt = self.timing.measurement_time_us;
+        if mt <= 0.0 || mt.is_nan() {
+            return Err(HardwareModelError::InvalidMeasurementTime(mt));
+        }
+        let fl = self.timing.classical_feedback_latency_us;
+        if fl < 0.0 || fl.is_nan() {
+            return Err(HardwareModelError::InvalidFeedbackLatency(fl));
+        }
+
+        // Factory
+        if self.factory.count() == 0 {
+            return Err(HardwareModelError::ZeroFactories);
+        }
+        match &self.factory {
+            FactoryConfig::Cultivation { lambda_raw, .. } => {
+                if *lambda_raw <= 0.0 || lambda_raw.is_nan() {
+                    return Err(HardwareModelError::InvalidLambdaRaw(*lambda_raw));
+                }
+            }
+            FactoryConfig::Distillation {
+                abort_probability, ..
+            } => {
+                let ap = *abort_probability;
+                if !(0.0..=1.0).contains(&ap) || ap.is_nan() {
+                    return Err(HardwareModelError::InvalidAbortProbability(ap));
+                }
+            }
+            FactoryConfig::RzSynthesis { .. } => {}
+        }
+
+        // Injection
+        let ep = self.injection.error_probability;
+        if !(0.0..=1.0).contains(&ep) || ep.is_nan() {
+            return Err(HardwareModelError::InvalidInjectionProbability(ep));
+        }
+
+        // Routing
+        let of = self.routing.overhead_fraction;
+        if !(0.0..=1.0).contains(&of) || of.is_nan() {
+            return Err(HardwareModelError::InvalidOverheadFraction(of));
+        }
+
+        // Buffer
+        if self.buffer.capacity == 0 {
+            return Err(HardwareModelError::ZeroBufferCapacity);
+        }
+
+        Ok(())
+    }
+}
+
 /// Model metadata.
 #[derive(Debug, Clone, Deserialize)]
 pub struct MetaConfig {
@@ -25,7 +188,7 @@ pub struct MetaConfig {
 /// Quantum error correction parameters.
 #[derive(Debug, Clone, Deserialize)]
 pub struct QecConfig {
-    pub code_type: String,
+    pub code_type: CodeType,
     pub code_distance: u32,
     pub physical_error_rate: f64,
     /// Error correction threshold (p_th). Defaults to 0.01 for surface code.
@@ -72,7 +235,7 @@ pub enum FactoryConfig {
     #[serde(rename = "distillation")]
     Distillation {
         count: u32,
-        protocol: String,
+        protocol: DistillationProtocol,
         cycles_per_round: u32,
         rounds: u32,
         abort_probability: f64,
@@ -121,16 +284,16 @@ fn default_fixup_cost() -> u32 {
 /// Routing model parameters.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RoutingConfig {
-    /// Routing model type: "scalar" or "graph".
+    /// Routing model type.
     #[serde(default = "default_routing_model")]
-    pub model: String,
+    pub model: RoutingModel,
     /// For scalar model: fraction of extra qubits used as routing overhead.
     #[serde(default = "default_overhead_fraction")]
     pub overhead_fraction: f64,
 }
 
-fn default_routing_model() -> String {
-    "scalar".to_owned()
+fn default_routing_model() -> RoutingModel {
+    RoutingModel::Scalar
 }
 
 fn default_overhead_fraction() -> f64 {
@@ -140,8 +303,8 @@ fn default_overhead_fraction() -> f64 {
 impl Default for RoutingConfig {
     fn default() -> Self {
         Self {
-            model: default_routing_model(),
-            overhead_fraction: default_overhead_fraction(),
+            model: RoutingModel::Scalar,
+            overhead_fraction: 0.5,
         }
     }
 }
@@ -154,13 +317,17 @@ pub struct BufferConfig {
     pub preload: u32,
 }
 
-/// Load a hardware model from a TOML string.
+/// Load and validate a hardware model from a TOML string.
 ///
 /// # Errors
 ///
-/// Returns an error if the TOML is malformed or missing required fields.
-pub fn load(toml_str: &str) -> Result<HardwareModel, toml::de::Error> {
-    toml::from_str(toml_str)
+/// Returns an error if the TOML is malformed, missing required fields,
+/// or violates domain invariants (e.g. even code distance, out-of-range
+/// probabilities, non-positive rates).
+pub fn load(toml_str: &str) -> Result<HardwareModel, HardwareModelError> {
+    let hw: HardwareModel = toml::from_str(toml_str)?;
+    hw.validate()?;
+    Ok(hw)
 }
 
 #[cfg(test)]
@@ -173,6 +340,7 @@ mod tests {
         let toml = include_str!("../../../models/surface_code_d17_cultivation.toml");
         let hw = load(toml).unwrap();
         assert_eq!(hw.qec.code_distance, 17);
+        assert_eq!(hw.qec.code_type, CodeType::SurfaceCode);
         assert!(matches!(hw.factory, FactoryConfig::Cultivation { .. }));
     }
 
@@ -180,7 +348,13 @@ mod tests {
     fn parse_distillation_model() {
         let toml = include_str!("../../../models/surface_code_d17_distillation.toml");
         let hw = load(toml).unwrap();
-        assert!(matches!(hw.factory, FactoryConfig::Distillation { .. }));
+        assert!(matches!(
+            hw.factory,
+            FactoryConfig::Distillation {
+                protocol: DistillationProtocol::FifteenToOne,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -213,8 +387,147 @@ capacity = 4
         let hw = load(toml).unwrap();
         assert!((hw.injection.error_probability - 0.5).abs() < f64::EPSILON);
         assert_eq!(hw.injection.fixup_cost_cycles, 1);
-        assert_eq!(hw.routing.model, "scalar");
+        assert_eq!(hw.routing.model, RoutingModel::Scalar);
         assert!((hw.routing.overhead_fraction - 0.5).abs() < f64::EPSILON);
         assert!((hw.qec.error_correction_threshold - 0.01).abs() < f64::EPSILON);
+    }
+
+    // ── Validation tests ─────────────────────────────────────────────────────
+
+    /// Helper: valid TOML that passes all checks. Tests below mutate one field.
+    fn valid_toml(factory_section: &str) -> String {
+        format!(
+            r#"
+[meta]
+name = "valid"
+
+[qec]
+code_type = "surface_code"
+code_distance = 9
+physical_error_rate = 1e-3
+
+[timing]
+cycle_time_us = 1.0
+
+{factory_section}
+
+[injection]
+error_probability = 0.5
+fixup_cost_cycles = 1
+
+[routing]
+model = "scalar"
+overhead_fraction = 0.5
+
+[buffer]
+capacity = 4
+"#
+        )
+    }
+
+    fn cultivation_factory() -> &'static str {
+        "[factory]\ntype = \"cultivation\"\ncount = 4\nlambda_raw = 0.002\nfault_distance = 3"
+    }
+
+    #[test]
+    fn rejects_even_code_distance() {
+        let toml =
+            valid_toml(cultivation_factory()).replace("code_distance = 9", "code_distance = 8");
+        assert!(matches!(
+            load(&toml),
+            Err(HardwareModelError::InvalidCodeDistance(8))
+        ));
+    }
+
+    #[test]
+    fn rejects_code_distance_below_three() {
+        let toml =
+            valid_toml(cultivation_factory()).replace("code_distance = 9", "code_distance = 1");
+        assert!(matches!(
+            load(&toml),
+            Err(HardwareModelError::InvalidCodeDistance(1))
+        ));
+    }
+
+    #[test]
+    fn rejects_zero_physical_error_rate() {
+        let toml = valid_toml(cultivation_factory())
+            .replace("physical_error_rate = 1e-3", "physical_error_rate = 0.0");
+        assert!(matches!(
+            load(&toml),
+            Err(HardwareModelError::InvalidPhysicalErrorRate(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_negative_cycle_time() {
+        let toml = valid_toml(cultivation_factory())
+            .replace("cycle_time_us = 1.0", "cycle_time_us = -1.0");
+        assert!(matches!(
+            load(&toml),
+            Err(HardwareModelError::InvalidCycleTime(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_zero_factory_count() {
+        let toml = valid_toml(cultivation_factory()).replace("count = 4", "count = 0");
+        assert!(matches!(
+            load(&toml),
+            Err(HardwareModelError::ZeroFactories)
+        ));
+    }
+
+    #[test]
+    fn rejects_zero_buffer_capacity() {
+        let toml = valid_toml(cultivation_factory()).replace("capacity = 4", "capacity = 0");
+        assert!(matches!(
+            load(&toml),
+            Err(HardwareModelError::ZeroBufferCapacity)
+        ));
+    }
+
+    #[test]
+    fn rejects_negative_lambda_raw() {
+        let toml =
+            valid_toml(cultivation_factory()).replace("lambda_raw = 0.002", "lambda_raw = -0.1");
+        assert!(matches!(
+            load(&toml),
+            Err(HardwareModelError::InvalidLambdaRaw(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_injection_probability_above_one() {
+        let toml = valid_toml(cultivation_factory())
+            .replace("error_probability = 0.5", "error_probability = 1.5");
+        assert!(matches!(
+            load(&toml),
+            Err(HardwareModelError::InvalidInjectionProbability(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_overhead_fraction_above_one() {
+        let toml = valid_toml(cultivation_factory())
+            .replace("overhead_fraction = 0.5", "overhead_fraction = 2.0");
+        assert!(matches!(
+            load(&toml),
+            Err(HardwareModelError::InvalidOverheadFraction(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_code_type() {
+        let toml = valid_toml(cultivation_factory())
+            .replace("code_type = \"surface_code\"", "code_type = \"banana\"");
+        assert!(matches!(load(&toml), Err(HardwareModelError::Parse(_))));
+    }
+
+    #[test]
+    fn rejects_invalid_routing_model() {
+        let toml =
+            valid_toml(cultivation_factory()).replace("model = \"scalar\"", "model = \"magic\"");
+        assert!(matches!(load(&toml), Err(HardwareModelError::Parse(_))));
     }
 }

@@ -17,8 +17,8 @@ use pirx_core::{
 use pirx_hw::{
     RoutingConfig,
     model::{
-        BufferConfig, FactoryConfig, HardwareModel, InjectionConfig, MetaConfig, QecConfig,
-        TimingConfig, load,
+        BufferConfig, CodeType, DistillationProtocol, FactoryConfig, HardwareModel,
+        InjectionConfig, MetaConfig, QecConfig, TimingConfig, load,
     },
 };
 use pirx_ir::circuit::{CircuitMetadata, Dependency, OpKind, Operation, ProfilerCircuit};
@@ -52,7 +52,7 @@ fn minimal_distillation_hw(
             description: String::new(),
         },
         qec: QecConfig {
-            code_type: "surface_code".into(),
+            code_type: CodeType::SurfaceCode,
             code_distance: 7,
             physical_error_rate: 1e-3,
             error_correction_threshold: 0.01,
@@ -65,7 +65,7 @@ fn minimal_distillation_hw(
         },
         factory: FactoryConfig::Distillation {
             count: factory_count,
-            protocol: "15-to-1".into(),
+            protocol: DistillationProtocol::FifteenToOne,
             cycles_per_round: 18,
             rounds: 3,
             abort_probability: 0.0,

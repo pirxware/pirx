@@ -160,9 +160,9 @@ impl ReadyQueue for FifoReadyQueue {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Dag {
     ops: SlotMap<OpKey, OpData>,
-    /// Adjacency maps — `pub` so the Engine can read them directly for
-    /// trace-event generation without a method-call overhead.
-    pub adjacency: DagAdjacency,
+    /// Adjacency maps — `pub(crate)` so the engine can read them for
+    /// ready-set traversal and trace-event generation.
+    pub(crate) adjacency: DagAdjacency,
     /// Deduped rotation angles. `OpKind::Rotation { angle_index }` indexes here.
     angle_table: Vec<f64>,
     /// QEC cycles per injected fixup node (from `HardwareModel::injection`).
@@ -428,8 +428,8 @@ fn detect_cycle(
 mod tests {
     use pirx_hw::RoutingConfig;
     use pirx_hw::model::{
-        BufferConfig, FactoryConfig, HardwareModel, InjectionConfig, MetaConfig, QecConfig,
-        TimingConfig,
+        BufferConfig, CodeType, DistillationProtocol, FactoryConfig, HardwareModel,
+        InjectionConfig, MetaConfig, QecConfig, TimingConfig,
     };
     use pirx_ir::circuit::{
         CircuitMetadata, Dependency, OpKind as IrOpKind, Operation, ProfilerCircuit,
@@ -458,7 +458,7 @@ mod tests {
                 description: String::new(),
             },
             qec: QecConfig {
-                code_type: "surface_code".into(),
+                code_type: CodeType::SurfaceCode,
                 code_distance: 7,
                 physical_error_rate: 1e-3,
                 error_correction_threshold: 0.01,
@@ -471,7 +471,7 @@ mod tests {
             },
             factory: FactoryConfig::Distillation {
                 count: 1,
-                protocol: "15-1".into(),
+                protocol: DistillationProtocol::FifteenToOne,
                 cycles_per_round: 10,
                 rounds: 3,
                 abort_probability: 0.01,

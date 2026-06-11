@@ -3,4 +3,6 @@
 
 pub mod model;
 
-pub use model::{HardwareModel, RoutingConfig};
+pub use model::{
+    CodeType, DistillationProtocol, HardwareModel, HardwareModelError, RoutingConfig, RoutingModel,
+};

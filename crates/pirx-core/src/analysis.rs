@@ -254,8 +254,8 @@ mod tests {
     use pirx_hw::{
         RoutingConfig,
         model::{
-            BufferConfig, FactoryConfig, HardwareModel, InjectionConfig, MetaConfig, QecConfig,
-            TimingConfig,
+            BufferConfig, CodeType, FactoryConfig, HardwareModel, InjectionConfig, MetaConfig,
+            QecConfig, TimingConfig,
         },
     };
     use pirx_ir::circuit::{CircuitMetadata, Dependency, OpKind, Operation, ProfilerCircuit};
@@ -278,7 +278,7 @@ mod tests {
                 description: String::new(),
             },
             qec: QecConfig {
-                code_type: "surface_code".into(),
+                code_type: CodeType::SurfaceCode,
                 code_distance: 7,
                 physical_error_rate: 1e-3,
                 error_correction_threshold: 0.01,

@@ -34,7 +34,7 @@ pub enum ValidationError {
 /// - No duplicate operation IDs
 /// - All dependency endpoints reference existing operations
 /// - All qubit references are within `qubit_count`
-/// - Dependency graph is acyclic (topological sort via Kahn's algorithm)
+/// - Dependency graph is acyclic (Kahn's topological sort, O(n + m))
 pub fn validate(circuit: &ProfilerCircuit) -> Result<(), ValidationError> {
     if circuit.ops.is_empty() {
         return Err(ValidationError::EmptyCircuit);
@@ -72,12 +72,19 @@ pub fn validate(circuit: &ProfilerCircuit) -> Result<(), ValidationError> {
     }
 
     // Acyclicity check via Kahn's algorithm (topological sort).
-    let mut in_degree = std::collections::HashMap::with_capacity(circuit.ops.len());
+    // Pre-build an adjacency list so the inner loop is O(successors), not O(all deps).
+    let n = circuit.ops.len();
+    let mut in_degree = std::collections::HashMap::with_capacity(n);
+    let mut successors: std::collections::HashMap<u64, Vec<u64>> =
+        std::collections::HashMap::with_capacity(n);
+
     for op in &circuit.ops {
         in_degree.insert(op.id, 0u64);
+        successors.entry(op.id).or_default();
     }
     for dep in &circuit.deps {
         *in_degree.entry(dep.to).or_insert(0) += 1;
+        successors.entry(dep.from).or_default().push(dep.to);
     }
 
     let mut queue = VecDeque::new();
@@ -90,19 +97,19 @@ pub fn validate(circuit: &ProfilerCircuit) -> Result<(), ValidationError> {
     let mut visited = 0u64;
     while let Some(node) = queue.pop_front() {
         visited += 1;
-        for dep in &circuit.deps {
-            if dep.from == node
-                && let Some(count) = in_degree.get_mut(&dep.to)
-            {
-                *count -= 1;
-                if *count == 0 {
-                    queue.push_back(dep.to);
+        if let Some(succs) = successors.get(&node) {
+            for &succ in succs {
+                if let Some(count) = in_degree.get_mut(&succ) {
+                    *count -= 1;
+                    if *count == 0 {
+                        queue.push_back(succ);
+                    }
                 }
             }
         }
     }
 
-    if visited != circuit.ops.len() as u64 {
+    if visited != n as u64 {
         return Err(ValidationError::CyclicDag);
     }
 
@@ -194,5 +201,12 @@ mod tests {
             validate(&c),
             Err(ValidationError::DuplicateOpId(0))
         ));
+    }
+
+    #[test]
+    fn self_loop_rejected() {
+        let mut c = minimal_circuit();
+        c.deps.push(Dependency { from: 0, to: 0 });
+        assert!(matches!(validate(&c), Err(ValidationError::CyclicDag)));
     }
 }

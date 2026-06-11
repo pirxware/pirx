@@ -3,5 +3,3 @@
 //!
 //! Each adapter is independent. No shared state between adapters.
 //! Adapters use external frameworks as-is — no forking, no patching.
-
-// TODO: openqasm3, ftcircuitbench adapters

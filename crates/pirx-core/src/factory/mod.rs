@@ -14,6 +14,14 @@ pub use distillation::DistillationFactory;
 use pirx_hw::model::{FactoryConfig, QecConfig};
 use rand::rngs::StdRng;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+/// Errors that can occur during factory construction.
+#[derive(Debug, Error)]
+pub enum FactoryError {
+    #[error("Rz synthesis factory is not yet implemented")]
+    RzSynthesisNotImplemented,
+}
 
 /// Outcome of a single factory production attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,7 +54,15 @@ pub trait FactoryModel: Send {
 ///
 /// `qec.code_distance` is forwarded to cultivation factories, which divide
 /// raw exponential service times by the code distance to obtain scheduling cycles.
-pub fn create_factories(config: &FactoryConfig, qec: &QecConfig) -> Vec<Box<dyn FactoryModel>> {
+///
+/// # Errors
+///
+/// Returns [`FactoryError::RzSynthesisNotImplemented`] if the hardware model
+/// specifies an Rz synthesis factory.
+pub fn create_factories(
+    config: &FactoryConfig,
+    qec: &QecConfig,
+) -> Result<Vec<Box<dyn FactoryModel>>, FactoryError> {
     match config {
         FactoryConfig::Distillation {
             count,
@@ -54,7 +70,7 @@ pub fn create_factories(config: &FactoryConfig, qec: &QecConfig) -> Vec<Box<dyn 
             rounds,
             abort_probability,
             ..
-        } => (0..*count)
+        } => Ok((0..*count)
             .map(|_| {
                 Box::new(DistillationFactory {
                     cycles_per_round: *cycles_per_round,
@@ -62,27 +78,27 @@ pub fn create_factories(config: &FactoryConfig, qec: &QecConfig) -> Vec<Box<dyn 
                     abort_probability: *abort_probability,
                 }) as Box<dyn FactoryModel>
             })
-            .collect(),
+            .collect()),
 
         FactoryConfig::Cultivation {
             count, lambda_raw, ..
-        } => (0..*count)
+        } => Ok((0..*count)
             .map(|_| {
                 Box::new(CultivationFactory {
                     lambda_raw: *lambda_raw,
                     code_distance: qec.code_distance,
                 }) as Box<dyn FactoryModel>
             })
-            .collect(),
+            .collect()),
 
-        FactoryConfig::RzSynthesis { .. } => todo!("RzSynthesis factory not yet implemented"),
+        FactoryConfig::RzSynthesis { .. } => Err(FactoryError::RzSynthesisNotImplemented),
     }
 }
 
 #[cfg(test)]
 #[allow(clippy::panic, clippy::unwrap_used)]
 mod tests {
-    use pirx_hw::model::{FactoryConfig, QecConfig};
+    use pirx_hw::model::{CodeType, FactoryConfig, QecConfig};
 
     use super::create_factories;
 
@@ -97,7 +113,7 @@ mod tests {
     fn distillation_config(count: u32) -> FactoryConfig {
         FactoryConfig::Distillation {
             count,
-            protocol: "15-to-1".to_owned(),
+            protocol: pirx_hw::model::DistillationProtocol::FifteenToOne,
             cycles_per_round: 100,
             rounds: 3,
             abort_probability: 0.0,
@@ -106,7 +122,7 @@ mod tests {
 
     fn qec() -> QecConfig {
         QecConfig {
-            code_type: "surface_code".to_owned(),
+            code_type: CodeType::SurfaceCode,
             code_distance: 17,
             physical_error_rate: 1e-3,
             error_correction_threshold: 0.01,
@@ -116,25 +132,35 @@ mod tests {
 
     #[test]
     fn create_factories_count() {
-        let distillation = create_factories(&distillation_config(3), &qec());
+        let distillation = create_factories(&distillation_config(3), &qec()).unwrap();
         assert_eq!(distillation.len(), 3);
 
-        let cultivation = create_factories(&cultivation_config(5), &qec());
+        let cultivation = create_factories(&cultivation_config(5), &qec()).unwrap();
         assert_eq!(cultivation.len(), 5);
     }
 
     #[test]
     fn create_factories_zero_count() {
-        let factories = create_factories(&cultivation_config(0), &qec());
+        let factories = create_factories(&cultivation_config(0), &qec()).unwrap();
         assert!(factories.is_empty());
     }
 
     #[test]
     fn create_factories_names() {
-        let factories = create_factories(&distillation_config(2), &qec());
+        let factories = create_factories(&distillation_config(2), &qec()).unwrap();
         assert!(factories.iter().all(|f| f.name() == "distillation"));
 
-        let factories = create_factories(&cultivation_config(2), &qec());
+        let factories = create_factories(&cultivation_config(2), &qec()).unwrap();
         assert!(factories.iter().all(|f| f.name() == "cultivation"));
+    }
+
+    #[test]
+    fn rz_synthesis_rejected() {
+        let config = FactoryConfig::RzSynthesis {
+            count: 4,
+            distinct_angles: 6,
+            mean_cycles_per_state: 30.0,
+        };
+        assert!(create_factories(&config, &qec()).is_err());
     }
 }

@@ -5,18 +5,18 @@
 //! All stochastic decisions flow through an explicit `StdRng` seeded from
 //! [`EngineConfig::seed`], ensuring full reproducibility (same seed → same trace).
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 
 use pirx_hw::model::HardwareModel;
 use pirx_ir::circuit::ProfilerCircuit;
 use rand::{Rng as _, SeedableRng, rngs::StdRng};
-use slotmap::Key as _;
+use slotmap::{Key as _, SecondaryMap};
 use thiserror::Error;
 
 use crate::buffer::MagicStateBuffer;
 use crate::dag::{Dag, DagError, FifoReadyQueue, OpKey, OpKind, ReadyQueue};
 use crate::events::{EngineEvent, EventQueue, TimedEvent};
-use crate::factory::{FactoryModel, FactoryOutcome, create_factories};
+use crate::factory::{FactoryError, FactoryModel, FactoryOutcome, create_factories};
 use crate::trace::{Trace, TraceCollector, TraceEventKind};
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -53,6 +53,9 @@ pub enum EngineError {
 
     #[error("buffer capacity is zero")]
     ZeroBuffer,
+
+    #[error("Rz synthesis factory is not yet implemented")]
+    RzSynthesisNotImplemented,
 }
 
 impl From<DagError> for EngineError {
@@ -62,6 +65,14 @@ impl From<DagError> for EngineError {
             DagError::DanglingDependency => Self::DanglingDependency,
             DagError::CyclicDag => Self::CyclicDag,
             DagError::TooManyDistinctAngles(n) => Self::TooManyRotationAngles(n),
+        }
+    }
+}
+
+impl From<FactoryError> for EngineError {
+    fn from(err: FactoryError) -> Self {
+        match err {
+            FactoryError::RzSynthesisNotImplemented => Self::RzSynthesisNotImplemented,
         }
     }
 }
@@ -95,7 +106,7 @@ pub struct Engine {
     // Stalled T-gates: ready but waiting for a magic state
     stalled_gates: VecDeque<OpKey>,
     /// Cycle at which each gate entered the stall queue, for wait-time accounting.
-    stall_start: HashMap<OpKey, u64>,
+    stall_start: SecondaryMap<OpKey, u64>,
 
     // Termination tracking (total_ops grows when fixups are injected)
     total_ops: u64,
@@ -131,7 +142,7 @@ impl Engine {
         let total_ops = dag.op_count() as u64;
 
         // Create factory instances from hardware config.
-        let factories = create_factories(&hw.factory, &hw.qec);
+        let factories = create_factories(&hw.factory, &hw.qec)?;
         let factory_count = factories.len();
 
         // Initialize buffer.
@@ -183,7 +194,7 @@ impl Engine {
             rng,
             seed: config.seed,
             stalled_gates: VecDeque::new(),
-            stall_start: HashMap::new(),
+            stall_start: SecondaryMap::new(),
             total_ops,
             completed_ops: 0,
             trace,
@@ -378,14 +389,13 @@ impl Engine {
 
     /// Serve as many stalled gates as the buffer allows (FIFO order).
     ///
-    /// Stops as soon as the buffer is empty — once empty, no further gates
-    /// in the queue can be served this cycle.
+    /// Zero-allocation: pops from the front of `stalled_gates`, pushes back
+    /// the first unservable gate, and breaks — remaining gates keep their
+    /// position in the deque.
     fn try_serve_stalled_gates(&mut self) {
-        let mut still_stalled: VecDeque<OpKey> = VecDeque::new();
-
         while let Some(gate) = self.stalled_gates.pop_front() {
             if self.buffer.try_dequeue() {
-                let stall_cycle = self.stall_start.remove(&gate).unwrap_or(self.current_cycle);
+                let stall_cycle = self.stall_start.remove(gate).unwrap_or(self.current_cycle);
                 let wait_u64 = self.current_cycle.saturating_sub(stall_cycle);
                 // Stall durations fit in u32 for any realistic simulation;
                 // saturate to MAX rather than truncate silently.
@@ -410,16 +420,12 @@ impl Engine {
                     EngineEvent::GateCompleted { gate },
                 );
             } else {
-                // Buffer exhausted — this gate and all remaining stalled gates
-                // cannot be served this cycle.
-                still_stalled.push_back(gate);
+                // Buffer exhausted — push this gate back and stop.
+                // All remaining gates in stalled_gates preserve their FIFO position.
+                self.stalled_gates.push_front(gate);
                 break;
             }
         }
-
-        // Preserve FIFO order: served slots are consumed, unserved remain.
-        still_stalled.extend(self.stalled_gates.drain(..));
-        self.stalled_gates = still_stalled;
     }
 
     /// Schedule the next production event for factory `factory_id`.
@@ -462,8 +468,8 @@ impl Engine {
 mod tests {
     use pirx_hw::RoutingConfig;
     use pirx_hw::model::{
-        BufferConfig, FactoryConfig, HardwareModel, InjectionConfig, MetaConfig, QecConfig,
-        TimingConfig,
+        BufferConfig, CodeType, FactoryConfig, HardwareModel, InjectionConfig, MetaConfig,
+        QecConfig, TimingConfig,
     };
     use pirx_ir::circuit::{CircuitMetadata, OpKind as IrOpKind, Operation, ProfilerCircuit};
     use smallvec::smallvec;
@@ -479,7 +485,7 @@ mod tests {
                 description: String::new(),
             },
             qec: QecConfig {
-                code_type: "surface_code".into(),
+                code_type: CodeType::SurfaceCode,
                 code_distance: 7,
                 physical_error_rate: 1e-3,
                 error_correction_threshold: 0.01,

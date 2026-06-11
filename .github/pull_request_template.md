@@ -22,3 +22,4 @@
 - [ ] No new `unwrap()`/`expect()` in production code
 - [ ] No new allocations in the simulation hot loop
 - [ ] Crate boundaries respected (pirx-core never imports from pirx-adapters)
+- [ ] New dependencies justified (not "it's popular" — what does it replace?)

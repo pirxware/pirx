@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -42,5 +46,61 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-      - uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe # v2
-      - uses: actions-rust-lang/audit@72c09e02f132669d52284a3323acdb503cfc1a24 # v1
+
+      - name: cargo deny
+        uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe # v2
+
+      - name: cargo audit
+        uses: actions-rust-lang/audit@72c09e02f132669d52284a3323acdb503cfc1a24 # v1
+
+      # Reject any dependency published in the last 7 days. Protects
+      # against supply-chain attacks that push malicious crate versions
+      # and hope for fast adoption before detection.
+      - name: Cargo dependency freshness check
+        run: |
+          set -euo pipefail
+          MIN_AGE_DAYS=7
+          NOW=$(date +%s)
+          FAIL_FILE=$(mktemp)
+          echo 0 > "$FAIL_FILE"
+
+          # Extract name+version pairs from Cargo.lock
+          while read -r name version; do
+
+            # Skip path/git deps (workspace crates)
+            grep -qP "^source = \"(path|git)" <<< \
+              "$(awk -v n="$name" -v v="$version" '
+                /^\[\[package\]\]/{found=0}
+                /^name = "'"$name"'"/{n_ok=1}
+                /^version = "'"$version"'"/{v_ok=1}
+                /^source = /{if(n_ok&&v_ok) print; n_ok=0; v_ok=0}
+              ' Cargo.lock 2>/dev/null)" 2>/dev/null && continue || true
+
+            # Query crates.io for publish date of this exact version.
+            # Download to file first — piping curl to python3 triggers the
+            # scorecard downloadThenRun check.
+            _tmp=$(mktemp)
+            curl -sf "https://crates.io/api/v1/crates/${name}/${version}" \
+              -H "User-Agent: pirx-ci (supply-chain-check)" \
+              -o "$_tmp" || { rm -f "$_tmp"; continue; }
+            PUBLISHED=$(python3 -c "import json; print(json.load(open('$_tmp'))['version']['created_at'])" 2>/dev/null) || { rm -f "$_tmp"; continue; }
+            rm -f "$_tmp"
+
+            PUB_EPOCH=$(date -d "$PUBLISHED" +%s 2>/dev/null) || continue
+            AGE_DAYS=$(( (NOW - PUB_EPOCH) / 86400 ))
+
+            if [ "$AGE_DAYS" -lt "$MIN_AGE_DAYS" ]; then
+              echo "::error::${name}@${version} published ${AGE_DAYS}d ago (minimum: ${MIN_AGE_DAYS}d)"
+              echo 1 > "$FAIL_FILE"
+            fi
+          done < <(awk '/^name = /{name=$3} /^version = /{print name, $3}' Cargo.lock \
+            | tr -d '"' | sort -u)
+
+          FAIL=$(cat "$FAIL_FILE")
+          rm -f "$FAIL_FILE"
+          [ "$FAIL" -eq 0 ] || {
+            echo ""
+            echo "Crate(s) above were published less than ${MIN_AGE_DAYS} days ago."
+            echo "Verify the release is legitimate before merging."
+            exit 1
+          }

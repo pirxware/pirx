@@ -21,7 +21,7 @@ cargo install cargo-deny
 **First-time setup:**
 
 ```bash
-git clone https://github.com/m2papierz/pirx.git
+git clone https://github.com/pirxware/pirx.git
 cd pirx
 make setup    # installs git hooks
 cargo build

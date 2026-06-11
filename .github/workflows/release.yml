@@ -1,0 +1,295 @@
+# Pirx release pipeline.
+#
+# Triggered by pushing a tag matching `v*` (e.g. `v0.1.0`).
+#
+# Flow:
+#   1. Build per-target binaries (5 targets).
+#   2. Assemble reproducible archives with SHA-256 checksums.
+#   3. Attest build provenance (SLSA) + generate SBOM.
+#   4. Sign everything with minisign.
+#   5. Create GitHub Release with all artifacts.
+#
+# Secrets required:
+#   MINISIGN_KEY      — minisign secret key (generate: minisign -G)
+#   MINISIGN_PASSWORD — passphrase for the secret key
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: "1.88"
+
+jobs:
+  # ── 1. Build platform binaries ──────────────────────────────────────────────
+
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    permissions:
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            cross: false
+            archive: tar.gz
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            cross: true
+            archive: tar.gz
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            cross: false
+            archive: tar.gz
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            cross: false
+            archive: tar.gz
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            cross: false
+            archive: zip
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Verify tag matches Cargo.toml version
+        shell: bash
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          CARGO_VERSION=$(sed -n 's/^version *= *"\(.*\)"/\1/p' \
+            crates/pirx-cli/Cargo.toml | head -1)
+          if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
+            echo "::error::Tag version ($TAG_VERSION) ≠ pirx-cli Cargo.toml version ($CARGO_VERSION)"
+            exit 1
+          fi
+          echo "Version ${TAG_VERSION} verified"
+
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.target }}
+
+      - name: Install system dependencies (Linux native)
+        if: runner.os == 'Linux' && !matrix.cross
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq clang lld
+
+      - name: Install cross
+        if: matrix.cross
+        run: cargo install cross --locked
+
+      - name: Strip linker overrides for cross builds
+        if: matrix.cross
+        shell: bash
+        run: |
+          python3 << 'PYEOF'
+          import pathlib, re
+          p = pathlib.Path('.cargo/config.toml')
+          lines = p.read_text().splitlines(keepends=True)
+          STRIP_SECTIONS = {
+              '[target.aarch64-unknown-linux-gnu]',
+              '[target.x86_64-unknown-linux-gnu]',
+          }
+          is_header = lambda s: bool(re.match(r'\s*\[\w', s))
+          out, skip = [], False
+          for line in lines:
+              s = line.strip()
+              if s.startswith('#') and 'Linux' in s:
+                  skip = True
+                  continue
+              if skip and is_header(line):
+                  if s in STRIP_SECTIONS:
+                      continue
+                  skip = False
+              if not skip:
+                  out.append(line)
+          p.write_text(''.join(out))
+          PYEOF
+
+      - name: Install GNU tar (macOS)
+        if: runner.os == 'macOS'
+        run: brew install gnu-tar
+
+      - name: Build
+        shell: bash
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross build --locked --release --target ${{ matrix.target }}
+          else
+            cargo build --locked --release --target ${{ matrix.target }}
+          fi
+
+      - name: Assemble release archive
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          TARGET="${{ matrix.target }}"
+          BIN_DIR="target/${TARGET}/release"
+          STAGING="pirx-${VERSION}-${TARGET}"
+
+          SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          export SOURCE_DATE_EPOCH
+
+          BIN="pirx"
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            BIN="pirx.exe"
+          fi
+
+          if [ ! -f "${BIN_DIR}/${BIN}" ]; then
+            echo "::error::Binary ${BIN_DIR}/${BIN} not found — build may have failed"
+            exit 1
+          fi
+
+          mkdir -p "${STAGING}"
+          cp "${BIN_DIR}/${BIN}" "${STAGING}/"
+
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            ARCHIVE="${STAGING}.zip"
+            7z a -tzip -mtc=off "${ARCHIVE}" "${STAGING}"
+          else
+            TAR=tar
+            command -v gtar >/dev/null 2>&1 && TAR=gtar
+            ARCHIVE="${STAGING}.tar.gz"
+            "$TAR" --sort=name \
+                   --mtime="@${SOURCE_DATE_EPOCH}" \
+                   --owner=0 --group=0 --numeric-owner \
+                   --format=gnu \
+                   -cf - "${STAGING}" \
+              | gzip -n -9 > "${ARCHIVE}"
+          fi
+
+          echo "ARCHIVE=${ARCHIVE}" >> "$GITHUB_ENV"
+
+      - name: Generate SHA-256 checksum
+        shell: bash
+        run: |
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${{ env.ARCHIVE }}" > "${{ env.ARCHIVE }}.sha256"
+          else
+            shasum -a 256 "${{ env.ARCHIVE }}" > "${{ env.ARCHIVE }}.sha256"
+          fi
+          echo "::group::Checksum"
+          cat "${{ env.ARCHIVE }}.sha256"
+          echo "::endgroup::"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4
+        with:
+          subject-path: ${{ env.ARCHIVE }}
+
+      - name: Generate SBOM
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        shell: bash
+        run: |
+          cargo install cargo-cyclonedx --locked
+          cargo cyclonedx --format json
+          SBOM=$(find . -maxdepth 1 -name '*.cdx.json' | head -1)
+          [ -n "$SBOM" ] || { echo "::error::No SBOM generated"; exit 1; }
+          mv "$SBOM" sbom.json
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-${{ matrix.target }}
+          path: |
+            ${{ env.ARCHIVE }}
+            ${{ env.ARCHIVE }}.sha256
+            sbom.json
+          if-no-files-found: ignore
+
+  # ── 2. Create GitHub Release ────────────────────────────────────────────────
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: release-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Verify release artifacts
+        run: |
+          echo "::group::All release artifacts"
+          ls -lhR artifacts/
+          echo "::endgroup::"
+
+          ARCHIVE_COUNT=$(find artifacts -name '*.tar.gz' -o -name '*.zip' | grep -v '\.sha256' | wc -l)
+          CHECKSUM_COUNT=$(find artifacts -name '*.sha256' | wc -l)
+
+          echo "Archives:  ${ARCHIVE_COUNT} (expected 5)"
+          echo "Checksums: ${CHECKSUM_COUNT} (expected 5)"
+
+          FAIL=0
+          [ "$ARCHIVE_COUNT"  -eq 5 ] || { echo "::error::Expected 5 archives, found ${ARCHIVE_COUNT}"; FAIL=1; }
+          [ "$CHECKSUM_COUNT" -eq 5 ] || { echo "::error::Expected 5 checksum files, found ${CHECKSUM_COUNT}"; FAIL=1; }
+          [ -f artifacts/sbom.json ]   || { echo "::error::SBOM not found"; FAIL=1; }
+          [ "$FAIL" -eq 0 ] || exit 1
+
+      - name: Verify per-target checksums
+        working-directory: artifacts
+        run: |
+          for checksum_file in *.sha256; do
+            echo "Verifying ${checksum_file}..."
+            sha256sum -c "$checksum_file"
+          done
+
+      - name: Create aggregate checksum file
+        working-directory: artifacts
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          sha256sum *.tar.gz *.zip 2>/dev/null \
+            | sort -k2 \
+            > "pirx-v${VERSION}-checksums.sha256"
+
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          path: repo
+
+      - name: Install minisign
+        run: |
+          MINISIGN_VERSION=0.11
+          curl -fsSL "https://github.com/jedisct1/minisign/releases/download/${MINISIGN_VERSION}/minisign-${MINISIGN_VERSION}-linux.tar.gz" \
+            | tar xz --strip-components=2 -C /usr/local/bin minisign-linux/x86_64/minisign
+          minisign -v
+
+      - name: Sign release artifacts
+        env:
+          MINISIGN_KEY: ${{ secrets.MINISIGN_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+        run: |
+          printenv MINISIGN_KEY > /tmp/minisign.key
+          trap 'rm -f /tmp/minisign.key' EXIT
+
+          for f in artifacts/*.tar.gz artifacts/*.zip artifacts/*-checksums.sha256; do
+            [ -f "$f" ] || continue
+            printenv MINISIGN_PASSWORD \
+              | minisign -S -s /tmp/minisign.key -m "$f" \
+                -t "$(basename "$f") — $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          done
+
+      - name: Create release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/*.tar.gz
+            artifacts/*.zip
+            artifacts/*.tar.gz.minisig
+            artifacts/*.zip.minisig
+            artifacts/*-checksums.sha256
+            artifacts/*-checksums.sha256.minisig
+            artifacts/sbom.json

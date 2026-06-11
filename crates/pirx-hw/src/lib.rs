@@ -3,4 +3,4 @@
 
 pub mod model;
 
-pub use model::HardwareModel;
+pub use model::{HardwareModel, RoutingConfig};

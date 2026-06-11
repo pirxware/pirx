@@ -2,42 +2,52 @@
 
 **Execution profiler for fault-tolerant quantum computing.**
 
-[![CI](https://img.shields.io/github/actions/workflow/status/m2papierz/pirx/ci.yml?style=flat-square&label=CI)](https://github.com/m2papierz/pirx/actions/workflows/ci.yml)
-[![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json&style=flat-square)](https://codspeed.io/m2papierz/pirx)
+[![CI](https://img.shields.io/github/actions/workflow/status/pirxware/pirx/ci.yml?style=flat-square&label=CI)](https://github.com/pirxware/pirx/actions/workflows/ci.yml)
+[![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json&style=flat-square)](https://codspeed.io/pirxware/pirx)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square)
-![Rust](https://img.shields.io/badge/rust-1.95%2B-orange?style=flat-square)
+![MSRV](https://img.shields.io/badge/rust-1.88%2B-orange?style=flat-square)
 
-<sub>Named after [Pilot Pirx](https://en.wikipedia.org/wiki/Tales_of_Pirx_the_Pilot) from Stanisław Lem's stories - the methodical engineer who traces what actually happened vs. what the instruments claimed.</sub>
+<sub>Named after [Pilot Pirx](https://en.wikipedia.org/wiki/Tales_of_Pirx_the_Pilot) from Stanisław Lem's stories — the methodical engineer who traces what actually happened vs. what the instruments claimed.</sub>
 
 [Security](SECURITY.md) · [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md)
 
 ---
 
-GPU computing had to build profiling tools (Nsight, perf) before optimization tools could exist. You can't optimize what you can't observe. Fault-tolerant quantum computing has no profiling layer. Every resource estimation tool gives you a single number — total qubits, total runtime — and leaves you guessing where the bottleneck is.
+GPU computing had to build profiling tools before optimization tools could exist — Nsight Systems, perf, VTune came first, then the compilers learned to use their output. You can't optimize what you can't observe. Fault-tolerant quantum computing has no profiling layer. Every resource estimation tool gives you a single number — total qubits, total runtime — and leaves you guessing where the bottleneck is.
 
-Pirx fills that gap. It is the performance engineering platform for FTQC: a discrete-event simulator that takes a compiled quantum circuit and a hardware model, and produces a temporal execution profile — showing you exactly what happens, cycle by cycle, when a fault-tolerant quantum computation runs.
+Pirx fills that gap. It is the discrete-event simulation engine that takes a compiled quantum circuit and a hardware model, and produces a temporal execution profile — showing exactly what happens, cycle by cycle, when a fault-tolerant quantum computation runs.
 
 > [!IMPORTANT]
-> **Under active development.** Not yet ready for use.
+> **Under active development.** The API and manifest format may have breaking changes until v1.0. Pin to a specific commit for production use.
 
-## Goal
- 
-Resource estimators tell you: *"4M qubits, 16 hours."*
- 
+## The problem
+
+Resource estimators tell you: *"4 million qubits, 16 hours."*
+
+They model factory throughput as a steady-state average: `runtime = total_T / (factories x throughput)`. This is like sizing a factory based on annual demand without looking at weekly peaks. Three phenomena that materially affect execution are invisible:
+
+- **Non-uniform demand.** Algorithms don't consume magic states at a constant rate. QFT butterfly stages are T-dense; Clifford stretches are T-free. The temporal demand pattern determines whether factories stall or qubits idle.
+- **Stochastic production and consumption.** Cultivation has exponentially distributed production times (mean ≈ 26 cycles at d=17, long tail). Every T-gate injection fails with 50% probability, inserting S-gate fixups that reshape the schedule at runtime. Awasthi et al. (2026) demonstrated this dual effect systematically mischaracterizes execution costs — up to 2.5× for cultivation.
+- **Shifting bottlenecks.** Different execution phases are constrained by different resources: factory throughput, routing contention, buffer capacity. No existing tool localizes bottlenecks in time.
+
+Researchers cannot answer: *"where is my execution bottleneck, and what should I optimize?"*
+
+## What Pirx does
+
 Pirx aims to tell you *where* those 16 hours go — which cycles are factory-bound, which are routing-bound, what happens when injection errors reshape the schedule, and which hardware parameter you should change first.
- 
-Specifically, the target capabilities are:
- 
-- **Temporal bottleneck localization** — not "it's slow" but "these cycles are factory-bound, those are routing-bound"
-- **Stochastic execution dynamics** — magic state cultivation, injection errors, distillation aborts
-- **Sensitivity analysis** — which hardware parameter dominates runtime variance
-- **Cross-architecture comparison** — same circuit profiled on different hardware models, side by side
+
+Target capabilities:
+
+- **Temporal bottleneck localization** — not "it's slow" but "cycles 42k–89k are factory-bound (butterfly stages), cycles 89k–143k are routing-bound"
+- **Stochastic execution dynamics** — magic state cultivation, injection errors, distillation aborts modeled as they actually occur
+- **Sensitivity analysis** — Sobol indices reveal which hardware parameter dominates runtime variance
+- **Cross-architecture comparison** — same circuit profiled on surface code, color code, qLDPC side by side
 - **Pluggable hardware models** — TOML specs shareable alongside papers
 
 ## Architecture
- 
+
 Five crates with strict dependency direction:
- 
+
 ```
 pirx-ir         Framework-agnostic circuit representation (Profiler IR)
 pirx-hw         Hardware model TOML types and parsing
@@ -45,7 +55,7 @@ pirx-core       DES engine, factory models, trace collection, analysis
 pirx-adapters   Framework converters (OpenQASM 3, FTCircuitBench, ...)
 pirx-cli        CLI binary
 ```
- 
+
 The core treats FTQC execution as a production system: magic-state factories are stochastic producers, the algorithm's T-gate sequence is the consumer, and the buffer between them is inventory. The math is queueing theory, critical-path scheduling, and global sensitivity analysis — well-established engineering disciplines applied to a domain that hasn't adopted them yet.
 
 ## Hardware model
@@ -71,6 +81,10 @@ fault_distance = 3
 [injection]
 error_probability = 0.5
 
+[routing]
+model = "scalar"
+overhead_fraction = 0.5
+
 [buffer]
 capacity = 8
 ```
@@ -83,6 +97,17 @@ make ci       # fmt + clippy + test + audit — run before pushing
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development guide.
+
+## Supply chain security
+
+Every CI run enforces:
+
+- **SHA-pinned actions** — all GitHub Actions referenced by commit SHA, not mutable tags
+- **7-day dependency quarantine** — any crate published less than 7 days ago fails the build
+- **cargo-deny** — license allowlist, advisory database, source restrictions, duplicate detection
+- **cargo-audit** — RustSec advisory database checks
+- **CodeQL** — static analysis of workflow definitions
+- **Signed releases** — minisign signatures + SHA-256 checksums + SLSA build provenance
 
 ## License
 

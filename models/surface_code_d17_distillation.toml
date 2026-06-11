@@ -23,6 +23,10 @@ abort_probability = 0.0015
 error_probability = 0.5
 fixup_cost_cycles = 1
 
+[routing]
+model = "scalar"
+overhead_fraction = 0.5
+
 [buffer]
 capacity = 8
 preload = 0

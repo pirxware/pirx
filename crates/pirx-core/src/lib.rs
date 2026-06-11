@@ -8,4 +8,5 @@
 pub mod buffer;
 pub mod dag;
 pub mod events;
+pub mod factory;
 pub mod trace;

@@ -222,7 +222,7 @@ fn circuit_three_cliffords() -> ProfilerCircuit {
 fn single_clifford() {
     let trace = Engine::new(
         &circuit_clifford(),
-        cultivation_hw(),
+        &cultivation_hw(),
         EngineConfig { seed: 0 },
     )
     .unwrap()
@@ -261,7 +261,7 @@ fn single_t_gate_served_immediately() {
     let mut hw = cultivation_hw();
     hw.buffer.preload = 1;
 
-    let trace = Engine::new(&circuit_t_gate(), hw, EngineConfig { seed: 0 })
+    let trace = Engine::new(&circuit_t_gate(), &hw, EngineConfig { seed: 0 })
         .unwrap()
         .run();
 
@@ -287,7 +287,7 @@ fn single_t_gate_served_immediately() {
 fn t_gate_stalls_then_served() {
     let hw = minimal_distillation_hw(1, 1, 0);
 
-    let trace = Engine::new(&circuit_two_t_gates(), hw, EngineConfig { seed: 0 })
+    let trace = Engine::new(&circuit_two_t_gates(), &hw, EngineConfig { seed: 0 })
         .unwrap()
         .run();
 
@@ -319,7 +319,7 @@ fn chain_respects_dependencies() {
     // Pre-load the buffer so the T-gate is served without waiting on factory timing.
     hw.buffer.preload = 1;
 
-    let trace = Engine::new(&circuit_chain(), hw, EngineConfig { seed: 0 })
+    let trace = Engine::new(&circuit_chain(), &hw, EngineConfig { seed: 0 })
         .unwrap()
         .run();
 
@@ -361,7 +361,7 @@ fn chain_respects_dependencies() {
 fn parallel_cliffords() {
     let trace = Engine::new(
         &circuit_three_cliffords(),
-        cultivation_hw(),
+        &cultivation_hw(),
         EngineConfig { seed: 0 },
     )
     .unwrap()
@@ -402,10 +402,10 @@ fn determinism() {
     let circuit = circuit_chain();
     let config = EngineConfig { seed: 42 };
 
-    let t1 = Engine::new(&circuit, cultivation_hw(), config)
+    let t1 = Engine::new(&circuit, &cultivation_hw(), config)
         .unwrap()
         .run();
-    let t2 = Engine::new(&circuit, cultivation_hw(), config)
+    let t2 = Engine::new(&circuit, &cultivation_hw(), config)
         .unwrap()
         .run();
     assert_eq!(
@@ -413,10 +413,10 @@ fn determinism() {
         "cultivation: same seed must produce an identical trace"
     );
 
-    let t3 = Engine::new(&circuit, distillation_hw(), config)
+    let t3 = Engine::new(&circuit, &distillation_hw(), config)
         .unwrap()
         .run();
-    let t4 = Engine::new(&circuit, distillation_hw(), config)
+    let t4 = Engine::new(&circuit, &distillation_hw(), config)
         .unwrap()
         .run();
     assert_eq!(
@@ -437,7 +437,7 @@ fn injection_fixup_extends_trace() {
         .find_map(|seed| {
             let mut hw = cultivation_hw();
             hw.buffer.preload = 1; // T-gate served immediately so injection can fire
-            let t = Engine::new(&circuit, hw, EngineConfig { seed })
+            let t = Engine::new(&circuit, &hw, EngineConfig { seed })
                 .unwrap()
                 .run();
             if t.events

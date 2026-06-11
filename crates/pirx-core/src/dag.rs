@@ -318,10 +318,9 @@ impl Dag {
                 op.active = true;
             }
             // Recompute live predecessor count from the actual predecessors list.
+            #[allow(clippy::cast_possible_truncation)]
             let live_pending = self.adjacency.predecessors.get(key).map_or(0u32, |preds| {
-                #[allow(clippy::cast_possible_truncation)]
-                let count = preds.iter().filter(|&&p| !completed(p)).count() as u32;
-                count
+                preds.iter().filter(|&&p| !completed(p)).count() as u32
             });
             self.adjacency.predecessor_count.insert(key, live_pending);
             if live_pending == 0 {
@@ -359,18 +358,17 @@ impl Dag {
             active: true, // fixups are always immediately active
         });
 
-        // Move gate's successors to fixup.
+        // Move gate's successors to fixup — take, don't clone (hot path).
         let gate_succs: SmallVec<[OpKey; 4]> = self
             .adjacency
             .successors
-            .get(gate)
-            .cloned()
+            .get_mut(gate)
+            .map(std::mem::take)
             .unwrap_or_default();
         self.adjacency.successors.insert(fixup, gate_succs);
 
-        // Gate now points only to fixup.
+        // Gate's successor list is now empty (taken above) — point it at fixup.
         if let Some(s) = self.adjacency.successors.get_mut(gate) {
-            s.clear();
             s.push(fixup);
         }
 

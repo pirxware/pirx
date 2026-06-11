@@ -73,7 +73,7 @@ impl TraceCollector {
 
     /// Append one event. Called on every engine step — must not allocate
     /// after the initial capacity is reached.
-    #[inline(always)]
+    #[inline]
     pub fn record(&mut self, cycle: u64, kind: TraceEventKind) {
         self.events.push(TraceEvent { cycle, kind });
     }

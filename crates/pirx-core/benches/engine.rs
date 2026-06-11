@@ -24,7 +24,7 @@ fn bench_engine_new(c: &mut Criterion) {
             b.iter(|| {
                 Engine::new(
                     circuit,
-                    pirx_testkit::cultivation_hw(),
+                    &pirx_testkit::cultivation_hw(),
                     EngineConfig { seed: SEED },
                 )
                 .unwrap()
@@ -47,8 +47,7 @@ fn bench_engine_run(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, _| {
             b.iter(|| {
-                let engine =
-                    Engine::new(&circuit, hw.clone(), EngineConfig { seed: SEED }).unwrap();
+                let engine = Engine::new(&circuit, &hw, EngineConfig { seed: SEED }).unwrap();
                 engine.run()
             });
         });
@@ -65,7 +64,7 @@ fn bench_analysis(c: &mut Criterion) {
         let circuit = pirx_testkit::t_gate_chain(size);
         let mut hw = pirx_testkit::cultivation_hw();
         hw.buffer.preload = 4;
-        let trace = Engine::new(&circuit, hw, EngineConfig { seed: SEED })
+        let trace = Engine::new(&circuit, &hw, EngineConfig { seed: SEED })
             .unwrap()
             .run();
 
@@ -84,7 +83,7 @@ fn bench_engine_step(c: &mut Criterion) {
 
     c.bench_function("engine_step_single", |b| {
         b.iter_batched(
-            || Engine::new(&circuit, hw.clone(), EngineConfig { seed: SEED }).unwrap(),
+            || Engine::new(&circuit, &hw, EngineConfig { seed: SEED }).unwrap(),
             |mut engine| engine.step(),
             codspeed_criterion_compat::BatchSize::SmallInput,
         );

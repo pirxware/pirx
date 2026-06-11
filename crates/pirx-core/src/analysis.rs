@@ -343,7 +343,7 @@ mod tests {
     fn total_cycles_matches_trace() {
         let circuit = chain_5_t_gates();
         let hw = cultivation_cold(1);
-        let trace = Engine::new(&circuit, hw, EngineConfig { seed: 0 })
+        let trace = Engine::new(&circuit, &hw, EngineConfig { seed: 0 })
             .unwrap()
             .run();
 
@@ -358,7 +358,7 @@ mod tests {
     fn injection_errors_count_matches_trace() {
         let circuit = chain_5_t_gates();
         let hw = cultivation_cold(1);
-        let trace = Engine::new(&circuit, hw, EngineConfig { seed: 0 })
+        let trace = Engine::new(&circuit, &hw, EngineConfig { seed: 0 })
             .unwrap()
             .run();
 
@@ -377,7 +377,7 @@ mod tests {
     fn factory_utilization_in_range() {
         let circuit = chain_5_t_gates();
         let hw = cultivation_cold(2);
-        let trace = Engine::new(&circuit, hw, EngineConfig { seed: 42 })
+        let trace = Engine::new(&circuit, &hw, EngineConfig { seed: 42 })
             .unwrap()
             .run();
 
@@ -402,7 +402,7 @@ mod tests {
     fn stall_events_nonempty_on_cold_start() {
         let circuit = chain_5_t_gates();
         let hw = cultivation_cold(1);
-        let trace = Engine::new(&circuit, hw, EngineConfig { seed: 7 })
+        let trace = Engine::new(&circuit, &hw, EngineConfig { seed: 7 })
             .unwrap()
             .run();
 
@@ -427,7 +427,7 @@ mod tests {
     fn profile_vector_lengths_consistent() {
         let circuit = chain_5_t_gates();
         let hw = cultivation_cold(1);
-        let trace = Engine::new(&circuit, hw, EngineConfig { seed: 1 })
+        let trace = Engine::new(&circuit, &hw, EngineConfig { seed: 1 })
             .unwrap()
             .run();
 
@@ -449,7 +449,7 @@ mod tests {
         let mut hw = cultivation_cold(1);
         hw.injection.error_probability = 0.0;
         hw.buffer.preload = 4; // warm start so T-gates don't stall
-        let trace = Engine::new(&circuit, hw, EngineConfig { seed: 99 })
+        let trace = Engine::new(&circuit, &hw, EngineConfig { seed: 99 })
             .unwrap()
             .run();
 
@@ -484,7 +484,7 @@ mod tests {
             },
         };
         let hw = cultivation_cold(1);
-        let trace = Engine::new(&clifford, hw, EngineConfig { seed: 0 })
+        let trace = Engine::new(&clifford, &hw, EngineConfig { seed: 0 })
             .unwrap()
             .run();
 

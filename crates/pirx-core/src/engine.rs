@@ -90,7 +90,7 @@ pub struct Engine {
     ready_set: Box<dyn ReadyQueue>,
 
     // Hardware state
-    hw: HardwareModel,
+    injection_error_probability: f64,
     factories: Vec<Box<dyn FactoryModel>>,
     buffer: MagicStateBuffer,
     routing: Box<dyn routing::RoutingModel>,
@@ -123,7 +123,7 @@ impl Engine {
     /// and pre-allocates the trace collector.
     pub fn new(
         circuit: &ProfilerCircuit,
-        hw: HardwareModel,
+        hw: &HardwareModel,
         config: EngineConfig,
     ) -> Result<Self, EngineError> {
         // Hardware validation before the (more expensive) DAG build.
@@ -137,7 +137,7 @@ impl Engine {
         let n_ops = circuit.ops.len();
 
         // Build DAG — validates circuit structure (acyclicity, dangling deps).
-        let dag = Dag::from_circuit(circuit, &hw)?;
+        let dag = Dag::from_circuit(circuit, hw)?;
         let total_ops = dag.op_count() as u64;
 
         // Validate routing compatibility.
@@ -194,7 +194,7 @@ impl Engine {
         Ok(Self {
             dag,
             ready_set,
-            hw,
+            injection_error_probability: hw.injection.error_probability,
             factories,
             buffer,
             routing: routing_model,
@@ -311,7 +311,7 @@ impl Engine {
         let inject = match kind {
             OpKind::TGate | OpKind::Rotation { .. } => {
                 // r#gen: `gen` is a reserved keyword in Rust 2024 edition.
-                self.rng.r#gen::<f64>() < self.hw.injection.error_probability
+                self.rng.r#gen::<f64>() < self.injection_error_probability
             }
             OpKind::Clifford | OpKind::Measurement | OpKind::Fixup => false,
         };
@@ -400,11 +400,7 @@ impl Engine {
                             wait: 0,
                         },
                     );
-                    let cost = self.total_gate_cost(gate);
-                    self.event_queue.schedule(
-                        self.current_cycle + u64::from(cost),
-                        EngineEvent::GateCompleted { gate },
-                    );
+                    self.schedule_gate_completion(gate);
                 } else {
                     self.trace.record(
                         self.current_cycle,
@@ -418,13 +414,19 @@ impl Engine {
                     self.current_cycle,
                     TraceEventKind::GateScheduled { gate: gate_raw },
                 );
-                let cost = self.total_gate_cost(gate);
-                self.event_queue.schedule(
-                    self.current_cycle + u64::from(cost),
-                    EngineEvent::GateCompleted { gate },
-                );
+                self.schedule_gate_completion(gate);
             }
         }
+    }
+
+    /// Schedule the `GateCompleted` event for `gate`, accounting for its base
+    /// cost and any routing latency.
+    fn schedule_gate_completion(&mut self, gate: OpKey) {
+        let cost = self.total_gate_cost(gate);
+        self.event_queue.schedule(
+            self.current_cycle + u64::from(cost),
+            EngineEvent::GateCompleted { gate },
+        );
     }
 
     /// Serve as many stalled gates as the buffer allows (FIFO order).
@@ -432,45 +434,35 @@ impl Engine {
     /// Stops as soon as the buffer is empty — once empty, no further gates
     /// in the queue can be served this cycle.
     fn try_serve_stalled_gates(&mut self) {
-        let mut still_stalled: VecDeque<OpKey> = VecDeque::new();
-
-        while let Some(gate) = self.stalled_gates.pop_front() {
-            if self.buffer.try_dequeue() {
-                let stall_cycle = self.stall_start.remove(&gate).unwrap_or(self.current_cycle);
-                let wait_u64 = self.current_cycle.saturating_sub(stall_cycle);
-                // Stall durations fit in u32 for any realistic simulation;
-                // saturate to MAX rather than truncate silently.
-                let wait = u32::try_from(wait_u64).unwrap_or(u32::MAX);
-
-                self.trace.record(
-                    self.current_cycle,
-                    TraceEventKind::BufferDequeue {
-                        occupancy: self.buffer.occupancy(),
-                    },
-                );
-                self.trace.record(
-                    self.current_cycle,
-                    TraceEventKind::GateServed {
-                        gate: gate.data().as_ffi(),
-                        wait,
-                    },
-                );
-                let cost = self.total_gate_cost(gate);
-                self.event_queue.schedule(
-                    self.current_cycle + u64::from(cost),
-                    EngineEvent::GateCompleted { gate },
-                );
-            } else {
-                // Buffer exhausted — this gate and all remaining stalled gates
-                // cannot be served this cycle.
-                still_stalled.push_back(gate);
+        // Serve from the front. On buffer exhaustion, break — the front gate and
+        // everything behind it stay queued in FIFO order. No scratch allocation.
+        while let Some(&gate) = self.stalled_gates.front() {
+            if !self.buffer.try_dequeue() {
                 break;
             }
-        }
+            self.stalled_gates.pop_front();
 
-        // Preserve FIFO order: served slots are consumed, unserved remain.
-        still_stalled.extend(self.stalled_gates.drain(..));
-        self.stalled_gates = still_stalled;
+            let stall_cycle = self.stall_start.remove(&gate).unwrap_or(self.current_cycle);
+            let wait_u64 = self.current_cycle.saturating_sub(stall_cycle);
+            // Stall durations fit in u32 for any realistic simulation;
+            // saturate to MAX rather than truncate silently.
+            let wait = u32::try_from(wait_u64).unwrap_or(u32::MAX);
+
+            self.trace.record(
+                self.current_cycle,
+                TraceEventKind::BufferDequeue {
+                    occupancy: self.buffer.occupancy(),
+                },
+            );
+            self.trace.record(
+                self.current_cycle,
+                TraceEventKind::GateServed {
+                    gate: gate.data().as_ffi(),
+                    wait,
+                },
+            );
+            self.schedule_gate_completion(gate);
+        }
     }
 
     /// Schedule the next production event for factory `factory_id`.
@@ -602,7 +594,7 @@ mod tests {
             fault_distance: 3,
         };
         assert!(matches!(
-            Engine::new(&single_clifford(), hw, EngineConfig { seed: 0 }),
+            Engine::new(&single_clifford(), &hw, EngineConfig { seed: 0 }),
             Err(EngineError::NoFactories)
         ));
     }
@@ -615,7 +607,7 @@ mod tests {
             preload: 0,
         };
         assert!(matches!(
-            Engine::new(&single_clifford(), hw, EngineConfig { seed: 0 }),
+            Engine::new(&single_clifford(), &hw, EngineConfig { seed: 0 }),
             Err(EngineError::ZeroBuffer)
         ));
     }
@@ -630,7 +622,7 @@ mod tests {
         let hw = cultivation_hw();
         let config = EngineConfig { seed: 42 };
 
-        let engine = Engine::new(&circuit, hw, config).expect("valid engine");
+        let engine = Engine::new(&circuit, &hw, config).expect("valid engine");
         let trace = engine.run();
 
         assert!(
@@ -650,7 +642,7 @@ mod tests {
         let hw = manhattan_hw();
         let circuit = single_clifford(); // qubit_positions: None
         assert!(matches!(
-            Engine::new(&circuit, hw, EngineConfig { seed: 0 }),
+            Engine::new(&circuit, &hw, EngineConfig { seed: 0 }),
             Err(EngineError::MissingQubitPositions)
         ));
     }
@@ -659,7 +651,7 @@ mod tests {
     fn scalar_routing_does_not_require_positions() {
         let hw = cultivation_hw(); // scalar routing
         let circuit = single_clifford(); // qubit_positions: None
-        let engine = Engine::new(&circuit, hw, EngineConfig { seed: 42 });
+        let engine = Engine::new(&circuit, &hw, EngineConfig { seed: 42 });
         assert!(engine.is_ok());
     }
 }

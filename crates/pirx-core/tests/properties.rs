@@ -28,7 +28,7 @@ proptest! {
         let mut hw = pirx_testkit::cultivation_hw();
         hw.buffer.preload = 4;
 
-        let trace = Engine::new(&circuit, hw, EngineConfig { seed })
+        let trace = Engine::new(&circuit, &hw, EngineConfig { seed })
             .unwrap()
             .run();
 
@@ -54,7 +54,7 @@ proptest! {
         let circuit = pirx_testkit::t_gate_chain(10);
         let hw = pirx_testkit::cultivation_hw();
 
-        let trace = Engine::new(&circuit, hw, EngineConfig { seed })
+        let trace = Engine::new(&circuit, &hw, EngineConfig { seed })
             .unwrap()
             .run();
 
@@ -75,10 +75,10 @@ proptest! {
         let circuit = pirx_testkit::t_gate_chain(8);
         let config = EngineConfig { seed };
 
-        let t1 = Engine::new(&circuit, pirx_testkit::cultivation_hw(), config)
+        let t1 = Engine::new(&circuit, &pirx_testkit::cultivation_hw(), config)
             .unwrap()
             .run();
-        let t2 = Engine::new(&circuit, pirx_testkit::cultivation_hw(), config)
+        let t2 = Engine::new(&circuit, &pirx_testkit::cultivation_hw(), config)
             .unwrap()
             .run();
 
@@ -95,7 +95,7 @@ proptest! {
         let mut hw = pirx_testkit::cultivation_hw();
         hw.buffer = BufferConfig { capacity, preload: 0 };
 
-        let trace = Engine::new(&circuit, hw, EngineConfig { seed })
+        let trace = Engine::new(&circuit, &hw, EngineConfig { seed })
             .unwrap()
             .run();
 
@@ -135,8 +135,8 @@ proptest! {
             fault_distance: 3,
         };
 
-        let t1 = Engine::new(&circuit, hw1, EngineConfig { seed }).unwrap().run();
-        let t2 = Engine::new(&circuit, hw2, EngineConfig { seed }).unwrap().run();
+        let t1 = Engine::new(&circuit, &hw1, EngineConfig { seed }).unwrap().run();
+        let t2 = Engine::new(&circuit, &hw2, EngineConfig { seed }).unwrap().run();
 
         prop_assert!(
             t2.total_cycles <= t1.total_cycles,
@@ -153,7 +153,7 @@ proptest! {
         let circuit = pirx_testkit::clifford_chain(n);
         let hw = pirx_testkit::cultivation_hw();
 
-        let trace = Engine::new(&circuit, hw, EngineConfig { seed })
+        let trace = Engine::new(&circuit, &hw, EngineConfig { seed })
             .unwrap()
             .run();
 

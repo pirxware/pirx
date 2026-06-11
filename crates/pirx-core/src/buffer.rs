@@ -1,4 +1,6 @@
-/// Fixed-capacity ring buffer tracking the count of magic states ready for injection.
+//! Magic state buffer — the bounded counter between factories and T-gates.
+
+/// Fixed-capacity counter tracking the number of magic states ready for injection.
 ///
 /// Full => factory output is wasted. Empty => T-gate stalls. No allocation; state is
 /// a single bounded counter.

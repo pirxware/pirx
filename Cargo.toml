@@ -36,7 +36,7 @@ slotmap = { version = "1", features = ["serde"] }
 smallvec = { version = "1", features = ["serde", "union"] }
 
 # Randomness
-rand = "0.8"
+rand = "0.9"
 rand_distr = "0.4"
 
 # CLI

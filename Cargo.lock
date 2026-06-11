@@ -594,7 +594,7 @@ dependencies = [
  "pirx-hw",
  "pirx-ir",
  "proptest",
- "rand 0.8.6",
+ "rand 0.9.4",
  "rand_distr",
  "rayon",
  "serde",

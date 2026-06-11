@@ -51,6 +51,9 @@ pub struct OpData {
     pub qubits: SmallVec<[QubitId; 2]>,
     /// Execution cost in QEC cycles.
     pub cycle_cost: u32,
+    /// Inactive ops are skipped in ready-set computation.
+    /// Activated by measurement hooks during simulation.
+    pub active: bool,
 }
 
 /// DAG adjacency — held separately from node data for cache locality.
@@ -64,6 +67,9 @@ pub struct DagAdjacency {
     /// `SmallVec<[OpKey; 4]>` — 32 bytes inline, no heap allocation for the
     /// common 1-4 successors case.
     pub successors: SecondaryMap<OpKey, SmallVec<[OpKey; 4]>>,
+    /// Predecessor keys for each node. Used by [`Dag::activate_ops`] to
+    /// recompute effective predecessor counts after activation.
+    pub predecessors: SecondaryMap<OpKey, SmallVec<[OpKey; 4]>>,
     /// Number of predecessors not yet completed. Decremented by
     /// [`Dag::release_successors`]. Reaches zero when the node is ready.
     pub predecessor_count: SecondaryMap<OpKey, u32>,
@@ -187,6 +193,8 @@ impl Dag {
         let mut ops: SlotMap<OpKey, OpData> = SlotMap::with_capacity_and_key(n);
         let mut successors: SecondaryMap<OpKey, SmallVec<[OpKey; 4]>> =
             SecondaryMap::with_capacity(n);
+        let mut predecessors: SecondaryMap<OpKey, SmallVec<[OpKey; 4]>> =
+            SecondaryMap::with_capacity(n);
         let mut predecessor_count: SecondaryMap<OpKey, u32> = SecondaryMap::with_capacity(n);
         let mut angle_table: Vec<f64> = Vec::new();
 
@@ -203,8 +211,10 @@ impl Dag {
                 // refinements (measurement latency, routing overhead) at
                 // scheduling time.
                 cycle_cost: 1,
+                active: op.initially_active,
             });
             successors.insert(key, SmallVec::new());
+            predecessors.insert(key, SmallVec::new());
             predecessor_count.insert(key, 0);
             id_to_key.insert(op.id, key);
         }
@@ -217,6 +227,9 @@ impl Dag {
             let &to_key = id_to_key.get(&dep.to).ok_or(DagError::DanglingDependency)?;
             if let Some(succs) = successors.get_mut(from_key) {
                 succs.push(to_key);
+            }
+            if let Some(preds) = predecessors.get_mut(to_key) {
+                preds.push(from_key);
             }
             if let Some(count) = predecessor_count.get_mut(to_key) {
                 *count += 1;
@@ -232,6 +245,7 @@ impl Dag {
             ops,
             adjacency: DagAdjacency {
                 successors,
+                predecessors,
                 predecessor_count,
             },
             angle_table,
@@ -248,12 +262,14 @@ impl Dag {
         self.ops
             .keys()
             .filter(|&k| {
-                self.adjacency
-                    .predecessor_count
-                    .get(k)
-                    .copied()
-                    .unwrap_or(0)
-                    == 0
+                self.ops.get(k).is_some_and(|op| op.active)
+                    && self
+                        .adjacency
+                        .predecessor_count
+                        .get(k)
+                        .copied()
+                        .unwrap_or(0)
+                        == 0
             })
             .collect()
     }
@@ -263,8 +279,9 @@ impl Dag {
     /// Any successor whose count reaches zero is pushed onto `queue` (it is
     /// now ready to execute).
     pub fn release_successors(&mut self, gate: OpKey, queue: &mut dyn ReadyQueue) {
-        // Split-borrow: successors and predecessor_count are disjoint fields;
-        // Rust NLL tracks them independently.
+        // Split-borrow: ops, successors, and predecessor_count are disjoint
+        // fields; Rust NLL tracks them independently.
+        let ops = &self.ops;
         let succs = &self.adjacency.successors;
         let pred = &mut self.adjacency.predecessor_count;
 
@@ -274,10 +291,41 @@ impl Dag {
                     // saturating_sub: underflow can't happen on a well-formed
                     // DAG (pirx-ir validates), but is safe under any input.
                     *count = count.saturating_sub(1);
-                    if *count == 0 {
+                    if *count == 0 && ops.get(succ).is_some_and(|op| op.active) {
                         queue.push(succ);
                     }
                 }
+            }
+        }
+    }
+
+    /// Activate pre-allocated ops after a measurement outcome.
+    ///
+    /// Recomputes effective predecessor_count by checking how many
+    /// predecessors are not yet completed. Pushes newly-ready ops to `queue`.
+    ///
+    /// `completed` is a callback that returns `true` if the given op has
+    /// already finished executing. The DAG does not track completion state —
+    /// the engine does.
+    pub fn activate_ops(
+        &mut self,
+        op_keys: &[OpKey],
+        completed: &impl Fn(OpKey) -> bool,
+        queue: &mut dyn ReadyQueue,
+    ) {
+        for &key in op_keys {
+            if let Some(op) = self.ops.get_mut(key) {
+                op.active = true;
+            }
+            // Recompute live predecessor count from the actual predecessors list.
+            let live_pending = self.adjacency.predecessors.get(key).map_or(0u32, |preds| {
+                #[allow(clippy::cast_possible_truncation)]
+                let count = preds.iter().filter(|&&p| !completed(p)).count() as u32;
+                count
+            });
+            self.adjacency.predecessor_count.insert(key, live_pending);
+            if live_pending == 0 {
+                queue.push(key);
             }
         }
     }
@@ -308,6 +356,7 @@ impl Dag {
             kind: OpKind::Fixup,
             qubits,
             cycle_cost: self.fixup_cost_cycles,
+            active: true, // fixups are always immediately active
         });
 
         // Move gate's successors to fixup.
@@ -327,6 +376,7 @@ impl Dag {
 
         // Fixup is immediately ready (gate already completed when this is called).
         self.adjacency.predecessor_count.insert(fixup, 0);
+        self.adjacency.predecessors.insert(fixup, SmallVec::new());
         queue.push(fixup);
 
         fixup
@@ -744,5 +794,188 @@ mod tests {
         let fixup_data = dag.get(key_f).expect("fixup data");
         assert_eq!(fixup_data.cycle_cost, 2); // minimal_hw fixup_cost_cycles = 2
         assert!(matches!(fixup_data.kind, OpKind::Fixup));
+    }
+
+    #[test]
+    fn inject_fixup_sets_active_true() {
+        let hw = minimal_hw();
+        let mut dag = Dag::from_circuit(&chain_circuit(2), &hw).expect("valid");
+        let key_a = dag.initial_ready_set()[0];
+        let mut queue = FifoReadyQueue::new();
+        let key_f = dag.inject_fixup(key_a, &mut queue);
+        let fixup = dag.get(key_f).expect("fixup");
+        assert!(fixup.active, "injected fixup must be active");
+        // Predecessors map must contain an entry for the fixup.
+        assert!(dag.adjacency.predecessors.get(key_f).is_some());
+    }
+
+    // ── active flag / activate_ops ──────────────────────────────────────────
+
+    #[test]
+    fn inactive_op_excluded_from_initial_ready_set() {
+        let hw = minimal_hw();
+        let circuit = ProfilerCircuit {
+            ops: vec![
+                Operation {
+                    id: 0,
+                    kind: IrOpKind::Clifford,
+                    qubits: smallvec![0],
+                    initially_active: true,
+                },
+                Operation {
+                    id: 1,
+                    kind: IrOpKind::Clifford,
+                    qubits: smallvec![0],
+                    initially_active: false,
+                },
+            ],
+            deps: vec![],
+            qubit_count: 1,
+            qubit_positions: None,
+            hooks: vec![],
+            metadata: meta(),
+        };
+        let dag = Dag::from_circuit(&circuit, &hw).expect("valid");
+        let ready = dag.initial_ready_set();
+        assert_eq!(
+            ready.len(),
+            1,
+            "only the active op should be in the ready set"
+        );
+    }
+
+    #[test]
+    fn release_successors_skips_inactive_successor() {
+        let hw = minimal_hw();
+        // A(active) → B(inactive): release_successors(A) must NOT push B.
+        let circuit = ProfilerCircuit {
+            ops: vec![
+                Operation {
+                    id: 0,
+                    kind: IrOpKind::Clifford,
+                    qubits: smallvec![0],
+                    initially_active: true,
+                },
+                Operation {
+                    id: 1,
+                    kind: IrOpKind::Clifford,
+                    qubits: smallvec![0],
+                    initially_active: false,
+                },
+            ],
+            deps: vec![Dependency { from: 0, to: 1 }],
+            qubit_count: 1,
+            qubit_positions: None,
+            hooks: vec![],
+            metadata: meta(),
+        };
+        let mut dag = Dag::from_circuit(&circuit, &hw).expect("valid");
+        let key_a = dag.initial_ready_set()[0];
+        let mut queue = FifoReadyQueue::new();
+        dag.release_successors(key_a, &mut queue);
+        // B is inactive, so even though pred count hit 0, it must not be queued.
+        assert!(queue.is_empty(), "inactive successor must not be pushed");
+    }
+
+    #[test]
+    fn activate_ops_with_completed_predecessors_pushes_to_queue() {
+        let hw = minimal_hw();
+        // A(active) → B(inactive)
+        let circuit = ProfilerCircuit {
+            ops: vec![
+                Operation {
+                    id: 0,
+                    kind: IrOpKind::Clifford,
+                    qubits: smallvec![0],
+                    initially_active: true,
+                },
+                Operation {
+                    id: 1,
+                    kind: IrOpKind::Clifford,
+                    qubits: smallvec![0],
+                    initially_active: false,
+                },
+            ],
+            deps: vec![Dependency { from: 0, to: 1 }],
+            qubit_count: 1,
+            qubit_positions: None,
+            hooks: vec![],
+            metadata: meta(),
+        };
+        let mut dag = Dag::from_circuit(&circuit, &hw).expect("valid");
+
+        // Find key_b (the inactive op).
+        let key_a = dag.initial_ready_set()[0];
+        let key_b = dag
+            .adjacency
+            .successors
+            .get(key_a)
+            .and_then(|s| s.first())
+            .copied()
+            .expect("B exists");
+
+        // A is already completed.
+        let mut queue = FifoReadyQueue::new();
+        dag.activate_ops(&[key_b], &|k| k == key_a, &mut queue);
+
+        assert!(dag.get(key_b).unwrap().active, "B must now be active");
+        assert_eq!(
+            dag.adjacency.predecessor_count.get(key_b).copied(),
+            Some(0),
+            "all predecessors completed → count must be 0"
+        );
+        assert_eq!(queue.len(), 1, "B must be pushed to queue");
+        assert_eq!(queue.pop(), Some(key_b));
+    }
+
+    #[test]
+    fn activate_ops_with_live_predecessors_not_pushed() {
+        let hw = minimal_hw();
+        // A(active) → B(inactive), A is NOT completed.
+        let circuit = ProfilerCircuit {
+            ops: vec![
+                Operation {
+                    id: 0,
+                    kind: IrOpKind::Clifford,
+                    qubits: smallvec![0],
+                    initially_active: true,
+                },
+                Operation {
+                    id: 1,
+                    kind: IrOpKind::Clifford,
+                    qubits: smallvec![0],
+                    initially_active: false,
+                },
+            ],
+            deps: vec![Dependency { from: 0, to: 1 }],
+            qubit_count: 1,
+            qubit_positions: None,
+            hooks: vec![],
+            metadata: meta(),
+        };
+        let mut dag = Dag::from_circuit(&circuit, &hw).expect("valid");
+        let key_a = dag.initial_ready_set()[0];
+        let key_b = dag
+            .adjacency
+            .successors
+            .get(key_a)
+            .and_then(|s| s.first())
+            .copied()
+            .expect("B exists");
+
+        // A is NOT completed — nothing_completed returns false for all.
+        let mut queue = FifoReadyQueue::new();
+        dag.activate_ops(&[key_b], &|_| false, &mut queue);
+
+        assert!(dag.get(key_b).unwrap().active, "B must now be active");
+        assert_eq!(
+            dag.adjacency.predecessor_count.get(key_b).copied(),
+            Some(1),
+            "A is still live → count must be 1"
+        );
+        assert!(
+            queue.is_empty(),
+            "B must NOT be pushed (has live predecessor)"
+        );
     }
 }

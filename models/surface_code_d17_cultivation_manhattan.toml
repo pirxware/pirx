@@ -1,0 +1,31 @@
+[meta]
+name = "surface_code_d17_cultivation_manhattan"
+description = "Cultivation with manhattan routing on 10x10 grid"
+
+[qec]
+code_type = "surface_code"
+code_distance = 17
+physical_error_rate = 1e-3
+
+[timing]
+cycle_time_us = 1.0
+
+[factory]
+type = "cultivation"
+count = 12
+lambda_raw = 0.00227
+fault_distance = 3
+
+[injection]
+error_probability = 0.5
+fixup_cost_cycles = 1
+
+[routing]
+model = "manhattan"
+grid_width = 10
+grid_height = 10
+cycles_per_hop = 1
+
+[buffer]
+capacity = 8
+preload = 0

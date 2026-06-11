@@ -118,9 +118,10 @@ pub fn validate(circuit: &ProfilerCircuit) -> Result<(), ValidationError> {
     // Validate measurement hook references.
     for op in &circuit.ops {
         if let crate::circuit::OpKind::Measurement { hook: Some(id) } = op.kind
-            && circuit.hooks.iter().all(|h| h.id != id) {
-                return Err(ValidationError::DanglingHookReference(id));
-            }
+            && circuit.hooks.iter().all(|h| h.id != id)
+        {
+            return Err(ValidationError::DanglingHookReference(id));
+        }
     }
 
     // Validate hook activation targets: must exist and be inactive.

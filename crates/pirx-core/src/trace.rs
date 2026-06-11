@@ -49,6 +49,7 @@ pub enum TraceEventKind {
 /// by the `ProfileAnalyzer` without re-running the simulation.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Trace {
+    pub schema_version: String,
     pub events: Vec<TraceEvent>,
     pub seed: u64,
     pub total_cycles: u64,
@@ -80,6 +81,7 @@ impl TraceCollector {
     /// Seal the event stream into an immutable `Trace` artifact.
     pub fn finish(self, seed: u64, total_cycles: u64) -> Trace {
         Trace {
+            schema_version: "1.0".to_owned(),
             events: self.events,
             seed,
             total_cycles,
@@ -98,6 +100,7 @@ mod tests {
         assert!(trace.events.is_empty());
         assert_eq!(trace.seed, 42);
         assert_eq!(trace.total_cycles, 0);
+        assert_eq!(trace.schema_version, "1.0");
     }
 
     #[test]

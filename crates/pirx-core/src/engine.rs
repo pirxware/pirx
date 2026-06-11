@@ -7,8 +7,9 @@
 
 use std::collections::{HashMap, VecDeque};
 
+use pirx_hw::RoutingConfig;
 use pirx_hw::model::HardwareModel;
-use pirx_ir::circuit::ProfilerCircuit;
+use pirx_ir::circuit::{GridPosition, ProfilerCircuit};
 use rand::{Rng as _, SeedableRng, rngs::StdRng};
 use slotmap::Key as _;
 use thiserror::Error;
@@ -17,6 +18,7 @@ use crate::buffer::MagicStateBuffer;
 use crate::dag::{Dag, DagError, FifoReadyQueue, OpKey, OpKind, ReadyQueue};
 use crate::events::{EngineEvent, EventQueue, TimedEvent};
 use crate::factory::{FactoryError, FactoryModel, FactoryOutcome, create_factories};
+use crate::routing;
 use crate::trace::{Trace, TraceCollector, TraceEventKind};
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -56,6 +58,9 @@ pub enum EngineError {
 
     #[error("factory creation failed: {0}")]
     FactoryCreation(#[from] FactoryError),
+
+    #[error("manhattan routing requires qubit_positions in circuit")]
+    MissingQubitPositions,
 }
 
 impl From<DagError> for EngineError {
@@ -88,6 +93,8 @@ pub struct Engine {
     hw: HardwareModel,
     factories: Vec<Box<dyn FactoryModel>>,
     buffer: MagicStateBuffer,
+    routing: Box<dyn routing::RoutingModel>,
+    qubit_positions: Vec<GridPosition>,
 
     // Simulation state
     event_queue: EventQueue,
@@ -132,6 +139,15 @@ impl Engine {
         // Build DAG — validates circuit structure (acyclicity, dangling deps).
         let dag = Dag::from_circuit(circuit, &hw)?;
         let total_ops = dag.op_count() as u64;
+
+        // Validate routing compatibility.
+        if matches!(hw.routing, RoutingConfig::Manhattan { .. })
+            && circuit.qubit_positions.is_none()
+        {
+            return Err(EngineError::MissingQubitPositions);
+        }
+        let routing_model = routing::from_config(&hw.routing);
+        let qubit_positions = circuit.qubit_positions.clone().unwrap_or_default();
 
         // Create factory instances from hardware config.
         let factories = create_factories(&hw.factory, &hw.qec)?;
@@ -181,6 +197,8 @@ impl Engine {
             hw,
             factories,
             buffer,
+            routing: routing_model,
+            qubit_positions,
             event_queue,
             current_cycle: 0,
             rng,
@@ -320,6 +338,36 @@ impl Engine {
         }
     }
 
+    /// Compute total gate cost including routing latency, emit routing trace
+    /// events if the routing cost is non-zero.
+    fn total_gate_cost(&mut self, gate: OpKey) -> u32 {
+        let (base_cost, routing_cost) = if let Some(op) = self.dag.get(gate) {
+            let rc = self
+                .routing
+                .latency(op.qubits.as_slice(), &self.qubit_positions);
+            (op.cycle_cost, rc)
+        } else {
+            (1, 0)
+        };
+
+        if routing_cost > 0 {
+            let gate_raw = gate.data().as_ffi();
+            self.trace.record(
+                self.current_cycle,
+                TraceEventKind::RoutingStarted { gate: gate_raw },
+            );
+            self.trace.record(
+                self.current_cycle,
+                TraceEventKind::RoutingCompleted {
+                    gate: gate_raw,
+                    latency: routing_cost,
+                },
+            );
+        }
+
+        base_cost.saturating_add(routing_cost)
+    }
+
     /// Schedule all gates currently in the ready queue.
     ///
     /// T-gates and rotations consume a magic state; if none is available they
@@ -352,7 +400,7 @@ impl Engine {
                             wait: 0,
                         },
                     );
-                    let cost = self.dag.get(gate).map_or(1, |op| op.cycle_cost);
+                    let cost = self.total_gate_cost(gate);
                     self.event_queue.schedule(
                         self.current_cycle + u64::from(cost),
                         EngineEvent::GateCompleted { gate },
@@ -370,7 +418,7 @@ impl Engine {
                     self.current_cycle,
                     TraceEventKind::GateScheduled { gate: gate_raw },
                 );
-                let cost = self.dag.get(gate).map_or(1, |op| op.cycle_cost);
+                let cost = self.total_gate_cost(gate);
                 self.event_queue.schedule(
                     self.current_cycle + u64::from(cost),
                     EngineEvent::GateCompleted { gate },
@@ -407,7 +455,7 @@ impl Engine {
                         wait,
                     },
                 );
-                let cost = self.dag.get(gate).map_or(1, |op| op.cycle_cost);
+                let cost = self.total_gate_cost(gate);
                 self.event_queue.schedule(
                     self.current_cycle + u64::from(cost),
                     EngineEvent::GateCompleted { gate },
@@ -510,6 +558,16 @@ mod tests {
         }
     }
 
+    fn manhattan_hw() -> HardwareModel {
+        let mut hw = cultivation_hw();
+        hw.routing = RoutingConfig::Manhattan {
+            grid_width: 10,
+            grid_height: 10,
+            cycles_per_hop: 1,
+        };
+        hw
+    }
+
     fn single_clifford() -> ProfilerCircuit {
         ProfilerCircuit {
             ops: vec![Operation {
@@ -583,5 +641,25 @@ mod tests {
             trace.total_cycles > 0,
             "simulation must advance at least one cycle"
         );
+    }
+
+    // ── Routing validation ────────────────────────────────────────────────────
+
+    #[test]
+    fn rejects_manhattan_without_positions() {
+        let hw = manhattan_hw();
+        let circuit = single_clifford(); // qubit_positions: None
+        assert!(matches!(
+            Engine::new(&circuit, hw, EngineConfig { seed: 0 }),
+            Err(EngineError::MissingQubitPositions)
+        ));
+    }
+
+    #[test]
+    fn scalar_routing_does_not_require_positions() {
+        let hw = cultivation_hw(); // scalar routing
+        let circuit = single_clifford(); // qubit_positions: None
+        let engine = Engine::new(&circuit, hw, EngineConfig { seed: 42 });
+        assert!(engine.is_ok());
     }
 }

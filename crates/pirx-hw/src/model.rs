@@ -73,15 +73,6 @@ pub enum DistillationProtocol {
     CczToTwoT,
 }
 
-/// Routing model type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-pub enum RoutingModel {
-    #[serde(rename = "scalar")]
-    Scalar,
-    #[serde(rename = "graph")]
-    Graph,
-}
-
 // ── Model types ──────────────────────────────────────────────────────────────
 
 /// Complete hardware model specification.
@@ -163,9 +154,16 @@ impl HardwareModel {
         }
 
         // Routing
-        let of = self.routing.overhead_fraction;
-        if !(0.0..=1.0).contains(&of) || of.is_nan() {
-            return Err(HardwareModelError::InvalidOverheadFraction(of));
+        match &self.routing {
+            RoutingConfig::Scalar { overhead_fraction } => {
+                let of = *overhead_fraction;
+                if !(0.0..=1.0).contains(&of) || of.is_nan() {
+                    return Err(HardwareModelError::InvalidOverheadFraction(of));
+                }
+            }
+            RoutingConfig::Manhattan { .. } => {
+                // grid_width, grid_height, cycles_per_hop are u32 — no invalid values.
+            }
         }
 
         // Buffer
@@ -281,29 +279,39 @@ fn default_fixup_cost() -> u32 {
     1
 }
 
-/// Routing model parameters.
+/// Routing model — tagged enum by `model` field.
+///
+/// Mirrors [`RoutingConfig`]: closed set, exhaustive matching, serde-driven.
 #[derive(Debug, Clone, Deserialize)]
-pub struct RoutingConfig {
-    /// Routing model type.
-    #[serde(default = "default_routing_model")]
-    pub model: RoutingModel,
-    /// For scalar model: fraction of extra qubits used as routing overhead.
-    #[serde(default = "default_overhead_fraction")]
-    pub overhead_fraction: f64,
-}
-
-fn default_routing_model() -> RoutingModel {
-    RoutingModel::Scalar
+#[serde(tag = "model")]
+pub enum RoutingConfig {
+    /// Fixed overhead per multi-qubit gate. Ignores topology.
+    #[serde(rename = "scalar")]
+    Scalar {
+        #[serde(default = "default_overhead_fraction")]
+        overhead_fraction: f64,
+    },
+    /// Manhattan distance on a logical qubit grid.
+    #[serde(rename = "manhattan")]
+    Manhattan {
+        grid_width: u32,
+        grid_height: u32,
+        #[serde(default = "default_cycles_per_hop")]
+        cycles_per_hop: u32,
+    },
 }
 
 fn default_overhead_fraction() -> f64 {
     0.5
 }
 
+fn default_cycles_per_hop() -> u32 {
+    1
+}
+
 impl Default for RoutingConfig {
     fn default() -> Self {
-        Self {
-            model: RoutingModel::Scalar,
+        Self::Scalar {
             overhead_fraction: 0.5,
         }
     }
@@ -358,6 +366,24 @@ mod tests {
     }
 
     #[test]
+    fn parse_manhattan_model() {
+        let toml = include_str!("../../../models/surface_code_d17_cultivation_manhattan.toml");
+        let hw = load(toml).unwrap();
+        match hw.routing {
+            RoutingConfig::Manhattan {
+                grid_width,
+                grid_height,
+                cycles_per_hop,
+            } => {
+                assert_eq!(grid_width, 10);
+                assert_eq!(grid_height, 10);
+                assert_eq!(cycles_per_hop, 1);
+            }
+            _ => panic!("expected Manhattan routing"),
+        }
+    }
+
+    #[test]
     fn defaults_applied_for_optional_fields() {
         let toml = r#"
 [meta]
@@ -380,6 +406,7 @@ fault_distance = 3
 [injection]
 
 [routing]
+model = "scalar"
 
 [buffer]
 capacity = 4
@@ -387,8 +414,15 @@ capacity = 4
         let hw = load(toml).unwrap();
         assert!((hw.injection.error_probability - 0.5).abs() < f64::EPSILON);
         assert_eq!(hw.injection.fixup_cost_cycles, 1);
-        assert_eq!(hw.routing.model, RoutingModel::Scalar);
-        assert!((hw.routing.overhead_fraction - 0.5).abs() < f64::EPSILON);
+        match hw.routing {
+            RoutingConfig::Scalar { overhead_fraction } => {
+                assert!(
+                    (overhead_fraction - 0.5).abs() < f64::EPSILON,
+                    "scalar overhead_fraction should default to 0.5"
+                );
+            }
+            _ => panic!("expected Scalar routing"),
+        }
         assert!((hw.qec.error_correction_threshold - 0.01).abs() < f64::EPSILON);
     }
 

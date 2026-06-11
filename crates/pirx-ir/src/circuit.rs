@@ -56,6 +56,7 @@ pub struct ProfilerCircuit {
     /// routing models (e.g. manhattan); `None` for topology-agnostic runs.
     pub qubit_positions: Option<Vec<GridPosition>>,
     /// Algorithm-level measurement hooks. Empty for non-adaptive circuits.
+    #[serde(default)]
     pub hooks: Vec<MeasurementHook>,
     pub metadata: CircuitMetadata,
 }
@@ -68,7 +69,12 @@ pub struct Operation {
     pub qubits: SmallVec<[QubitId; 2]>,
     /// `false` for pre-allocated conditional ops (RUS iterations, branch arms).
     /// The engine skips inactive ops during ready-set computation.
+    #[serde(default = "default_active")]
     pub initially_active: bool,
+}
+
+fn default_active() -> bool {
+    true
 }
 
 /// Classification of a quantum operation.

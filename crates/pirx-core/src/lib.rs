@@ -11,6 +11,7 @@ pub mod dag;
 pub mod engine;
 pub mod events;
 pub mod factory;
+pub mod routing;
 pub mod trace;
 
 // Re-export primary types for downstream ergonomics.

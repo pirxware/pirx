@@ -2,7 +2,7 @@
 
 **Execution profiler for fault-tolerant quantum computing.**
 
-[![CI](https://img.shields.io/github/actions/workflow/status/pirxware/pirx/ci.yml?style=flat-square&label=CI)](https://github.com/pirxware/pirx/actions/workflows/ci.yml)
+[![CI](https://img.shields.io/github/actions/workflow/status/pirxware/pirx/ci.yml?branch=master&style=flat-square&label=CI)](https://github.com/pirxware/pirx/actions/workflows/ci.yml)
 [![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json&style=flat-square)](https://codspeed.io/pirxware/pirx)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square)
 ![MSRV](https://img.shields.io/badge/rust-1.88%2B-orange?style=flat-square)
@@ -34,26 +34,35 @@ Researchers cannot answer: *"where is my execution bottleneck, and what should I
 
 ## What Pirx does
 
-Pirx aims to tell you *where* those 16 hours go — which cycles are factory-bound, which are routing-bound, what happens when injection errors reshape the schedule, and which hardware parameter you should change first.
+Pirx tells you *where* those 16 hours go — which cycles are factory-bound, which are routing-bound, what happens when injection errors reshape the schedule, and which hardware parameter you should change first.
 
-Target capabilities:
+**Working today:**
 
-- **Temporal bottleneck localization** — not "it's slow" but "cycles 42k–89k are factory-bound (butterfly stages), cycles 89k–143k are routing-bound"
-- **Stochastic execution dynamics** — magic state cultivation, injection errors, distillation aborts modeled as they actually occur
-- **Sensitivity analysis** — Sobol indices reveal which hardware parameter dominates runtime variance
-- **Cross-architecture comparison** — same circuit profiled on surface code, color code, qLDPC side by side
-- **Pluggable hardware models** — TOML specs shareable alongside papers
+- **Discrete-event simulation engine** — cycle-accurate execution of fault-tolerant circuits with DAG-based dependency scheduling, deterministic reproducibility (same seed = identical trace), and injection error recovery with fixup node insertion
+- **Stochastic factory models** — cultivation (exponential service time) and distillation (multi-round with per-round abort probability), both driven by an explicit seeded RNG
+- **Magic state buffer dynamics** — finite-capacity buffer with cold/warm start, FIFO stall queue, and per-gate wait-time accounting
+- **Post-hoc trace analysis** — single O(n) pass producing time-bucketed execution profiles: factory utilization, buffer occupancy, bottleneck classification (factory-throughput / routing-contention / balanced), stall records, injection error counts, and critical-path extension
+- **Pluggable hardware models** — TOML-specified, validated at load time; surface code, color code, and qLDPC families; ships with two reference models (d=17 cultivation, d=17 distillation)
+- **Property-based testing** — proptest-driven invariant checking (determinism, monotonicity, buffer bounds, factory scaling) plus Criterion/CodSpeed benchmarks
+
+**Planned:**
+
+- Sensitivity analysis — Sobol indices to reveal which hardware parameter dominates runtime variance
+- Framework adapters — OpenQASM 3, FTCircuitBench
+- Cross-architecture comparison — same circuit profiled across code families
+- Full CLI with JSON report output
 
 ## Architecture
 
-Five crates with strict dependency direction:
+Six crates with strict dependency direction:
 
 ```
 pirx-ir         Framework-agnostic circuit representation (Profiler IR)
-pirx-hw         Hardware model TOML types and parsing
-pirx-core       DES engine, factory models, trace collection, analysis
-pirx-adapters   Framework converters (OpenQASM 3, FTCircuitBench, ...)
-pirx-cli        CLI binary
+pirx-hw         Hardware model TOML types, parsing, and validation
+pirx-core       DES engine, factory models, buffer, trace collection, analysis
+pirx-adapters   Framework converters (planned: OpenQASM 3, FTCircuitBench)
+pirx-cli        CLI binary (scaffold)
+pirx-testkit    Shared test fixtures for the workspace (dev only)
 ```
 
 The core treats FTQC execution as a production system: magic-state factories are stochastic producers, the algorithm's T-gate sequence is the consumer, and the buffer between them is inventory. The math is queueing theory, critical-path scheduling, and global sensitivity analysis — well-established engineering disciplines applied to a domain that hasn't adopted them yet.

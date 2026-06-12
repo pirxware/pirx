@@ -103,6 +103,7 @@ impl Default for EventQueue {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use slotmap::SlotMap;
 
@@ -153,7 +154,7 @@ mod tests {
     #[test]
     fn seq_distinct_past_u32_max() {
         let mut q = EventQueue::new();
-        q.next_seq = u32::MAX as u64 - 5;
+        q.next_seq = u64::from(u32::MAX) - 5;
 
         for _ in 0..10 {
             q.schedule(1, factory_produced(0));
@@ -170,7 +171,7 @@ mod tests {
             );
         }
         assert!(
-            seqs.last().copied().unwrap() > u32::MAX as u64,
+            seqs.last().copied().unwrap() > u64::from(u32::MAX),
             "seq must cross u32::MAX without saturating"
         );
     }

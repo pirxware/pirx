@@ -69,7 +69,7 @@ proptest! {
 
     /// Same circuit + same hardware + same seed = identical trace, bit-for-bit.
     ///
-    /// Principle P1. All randomness flows through an explicit StdRng.
+    /// Principle P1. All randomness flows through an explicit ChaCha12Rng.
     #[test]
     fn determinism(seed in 0u64..10_000) {
         let circuit = pirx_testkit::validated(pirx_testkit::t_gate_chain(8));

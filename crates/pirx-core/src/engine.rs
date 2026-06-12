@@ -2,7 +2,7 @@
 //!
 //! `Engine` drives the circuit DAG through factory events, gate scheduling,
 //! magic state consumption, stall tracking, and injection error recovery.
-//! All stochastic decisions flow through an explicit `StdRng` seeded from
+//! All stochastic decisions flow through an explicit `ChaCha12Rng` seeded from
 //! [`EngineConfig::seed`], ensuring full reproducibility (same seed → same trace).
 
 use std::collections::{HashMap, VecDeque};
@@ -11,7 +11,8 @@ use pirx_hw::RoutingConfig;
 use pirx_hw::model::HardwareModel;
 use pirx_ir::ValidatedCircuit;
 use pirx_ir::circuit::{GridPosition, MeasurementHookId, MeasurementOutcome, OpId};
-use rand::{Rng as _, SeedableRng, rngs::StdRng};
+use rand::{Rng as _, SeedableRng};
+use rand_chacha::ChaCha12Rng;
 use slotmap::SecondaryMap;
 use smallvec::SmallVec;
 use thiserror::Error;
@@ -114,7 +115,7 @@ pub struct Engine {
     // Simulation state
     event_queue: EventQueue,
     current_cycle: u64,
-    rng: StdRng,
+    rng: ChaCha12Rng,
     seed: u64,
     max_cycles: Option<u64>,
 
@@ -191,7 +192,7 @@ impl Engine {
         let buffer = MagicStateBuffer::new(hw.buffer.capacity, hw.buffer.preload);
 
         // Seed RNG — all stochastic decisions flow through this reference.
-        let mut rng = StdRng::seed_from_u64(config.seed);
+        let mut rng = ChaCha12Rng::seed_from_u64(config.seed);
 
         // Build initial ready set: all ops with predecessor_count == 0.
         let mut ready_set = Box::new(FifoReadyQueue::with_capacity(n_ops)) as Box<dyn ReadyQueue>;
@@ -376,10 +377,8 @@ impl Engine {
                         TraceEventKind::FixupCompleted { fixup: gate_id },
                     );
                 } else {
-                    self.trace.record(
-                        event.cycle,
-                        TraceEventKind::GateCompleted { gate: gate_id },
-                    );
+                    self.trace
+                        .record(event.cycle, TraceEventKind::GateCompleted { gate: gate_id });
                 }
                 self.completed_ops += 1;
                 if !self.hook_table.is_empty() {

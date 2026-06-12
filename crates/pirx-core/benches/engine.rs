@@ -96,6 +96,41 @@ fn bench_analysis(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_manhattan_routing(c: &mut Criterion) {
+    let mut group = c.benchmark_group("manhattan_routing");
+    group.sampling_mode(SamplingMode::Auto);
+
+    for &n in &[100u32, 500, 1000, 2000] {
+        let qubit_count = n * 2;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let grid_side = f64::from(qubit_count).sqrt().ceil() as u32;
+        let circuit = pirx_testkit::validated(pirx_testkit::two_qubit_grid(n));
+        let mut hw = pirx_testkit::manhattan_hw(grid_side, grid_side);
+        hw.buffer.preload = 4;
+
+        group.bench_with_input(
+            BenchmarkId::new("run", format!("{n}gates_{qubit_count}qubits")),
+            &n,
+            |b, _| {
+                b.iter(|| {
+                    let engine = Engine::new(
+                        &circuit,
+                        &hw,
+                        EngineConfig {
+                            seed: SEED,
+                            max_cycles: None,
+                        },
+                    )
+                    .unwrap();
+                    engine.run()
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
 fn bench_engine_step(c: &mut Criterion) {
     let circuit = pirx_testkit::validated(pirx_testkit::t_gate_chain(100));
     let mut hw = pirx_testkit::cultivation_hw();
@@ -125,6 +160,7 @@ criterion_group!(
     bench_engine_new,
     bench_engine_run,
     bench_analysis,
+    bench_manhattan_routing,
     bench_engine_step
 );
 criterion_main!(benches);

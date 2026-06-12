@@ -10,7 +10,7 @@ use std::collections::VecDeque;
 use pirx_hw::{RoutingConfig, model::HardwareModel};
 use pirx_ir::{
     ValidatedCircuit,
-    circuit::{GridPosition, MeasurementHookId, MeasurementOutcome, OpId},
+    circuit::{MeasurementHookId, MeasurementOutcome, OpId},
 };
 use rand::{Rng as _, SeedableRng};
 use rand_chacha::ChaCha12Rng;
@@ -113,7 +113,7 @@ pub struct Engine {
     factories: Vec<Box<dyn FactoryModel>>,
     buffer: MagicStateBuffer,
     routing: Box<dyn routing::RoutingModel>,
-    qubit_positions: Vec<GridPosition>,
+    position_index: Vec<(u32, u32)>,
 
     // Simulation state
     event_queue: EventQueue,
@@ -186,7 +186,10 @@ impl Engine {
             return Err(EngineError::MissingQubitPositions);
         }
         let routing_model = routing::from_config(&hw.routing);
-        let qubit_positions = circuit.qubit_positions.clone().unwrap_or_default();
+        let position_index = routing::build_position_index(
+            circuit.qubit_positions.as_deref().unwrap_or(&[]),
+            circuit.qubit_count,
+        );
 
         // Create factory instances from hardware config.
         let factories = create_factories(&hw.factory, &hw.qec)?;
@@ -279,7 +282,7 @@ impl Engine {
             factories,
             buffer,
             routing: routing_model,
-            qubit_positions,
+            position_index,
             event_queue,
             current_cycle: 0,
             rng,
@@ -509,7 +512,7 @@ impl Engine {
         let (base_cost, routing_cost) = if let Some(op) = self.dag.get(gate) {
             let rc = self
                 .routing
-                .latency(op.qubits.as_slice(), &self.qubit_positions);
+                .latency(op.qubits.as_slice(), &self.position_index);
             (op.cycle_cost, rc)
         } else {
             (1, 0)

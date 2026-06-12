@@ -19,8 +19,8 @@ use pirx_hw::{
 use pirx_ir::{
     ValidatedCircuit,
     circuit::{
-        CircuitMetadata, ConditionalActivation, Dependency, MeasurementHook, MeasurementOutcome,
-        OpKind, Operation, ProfilerCircuit,
+        CircuitMetadata, ConditionalActivation, Dependency, GridPosition, MeasurementHook,
+        MeasurementOutcome, OpKind, Operation, ProfilerCircuit,
     },
 };
 use smallvec::smallvec;
@@ -167,7 +167,74 @@ pub fn deterministic_distillation_hw(
     }
 }
 
+/// Cultivation factory with Manhattan routing on a `width × height` grid.
+pub fn manhattan_hw(width: u32, height: u32) -> HardwareModel {
+    HardwareModel {
+        meta: MetaConfig {
+            name: "test-manhattan".into(),
+            description: String::new(),
+        },
+        qec: surface_code_qec(7),
+        timing: default_timing(),
+        factory: FactoryConfig::Cultivation {
+            count: 1,
+            lambda_raw: 0.002,
+            fault_distance: 3,
+        },
+        injection: InjectionConfig {
+            error_probability: 0.5,
+            fixup_cost_cycles: 1,
+        },
+        routing: RoutingConfig::Manhattan {
+            grid_width: width,
+            grid_height: height,
+            cycles_per_hop: 1,
+        },
+        buffer: BufferConfig {
+            capacity: 4,
+            preload: 0,
+        },
+    }
+}
+
 // ── Circuit builders ─────────────────────────────────────────────────────────
+
+/// `n` independent two-qubit Clifford gates on a grid. Qubit `2*i` and
+/// `2*i+1` form each pair, laid out on consecutive grid columns.
+/// Used for benchmarking Manhattan routing with many qubits.
+pub fn two_qubit_grid(n: u32) -> ProfilerCircuit {
+    let qubit_count = n * 2;
+    let ops: Vec<Operation> = (0..n)
+        .map(|i| Operation {
+            id: u64::from(i),
+            kind: OpKind::Clifford,
+            qubits: smallvec![i * 2, i * 2 + 1],
+            initially_active: true,
+        })
+        .collect();
+    let positions: Vec<GridPosition> = (0..qubit_count)
+        .map(|q| GridPosition {
+            qubit: q,
+            row: q / 64,
+            col: q % 64,
+        })
+        .collect();
+    ProfilerCircuit {
+        ops,
+        deps: vec![],
+        qubit_count,
+        qubit_positions: Some(positions),
+        hooks: vec![],
+        metadata: CircuitMetadata {
+            name: "two-qubit-grid".into(),
+            source_framework: "test".into(),
+            t_count: 0,
+            clifford_count: u64::from(n),
+            rotation_count: 0,
+            depth: 1,
+        },
+    }
+}
 
 /// Single Clifford gate on qubit 0. No dependencies, no magic state needed.
 pub fn single_clifford() -> ProfilerCircuit {

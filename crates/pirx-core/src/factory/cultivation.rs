@@ -4,7 +4,7 @@
 //! `lambda_raw`. The raw sample is divided by `code_distance` (cycles per
 //! raw time unit) and rounded up — ensuring at least 1 scheduling cycle.
 
-use rand::rngs::StdRng;
+use rand_chacha::ChaCha12Rng;
 use rand_distr::{Distribution, Exp};
 use serde::{Deserialize, Serialize};
 
@@ -24,7 +24,7 @@ pub struct CultivationFactory {
 }
 
 impl FactoryModel for CultivationFactory {
-    fn schedule_production(&self, current_cycle: u64, rng: &mut StdRng) -> FactoryOutcome {
+    fn schedule_production(&self, current_cycle: u64, rng: &mut ChaCha12Rng) -> FactoryOutcome {
         let Ok(dist) = Exp::new(self.lambda_raw) else {
             // lambda_raw <= 0: invalid config that slipped validation.
             // 1-cycle fallback keeps the engine alive; trace shows impossible speed.
@@ -50,7 +50,8 @@ impl FactoryModel for CultivationFactory {
 #[cfg(test)]
 #[allow(clippy::panic, clippy::unwrap_used)]
 mod tests {
-    use rand::{SeedableRng, rngs::StdRng};
+    use rand::SeedableRng;
+    use rand_chacha::ChaCha12Rng;
 
     use super::{CultivationFactory, FactoryModel, FactoryOutcome};
 
@@ -63,7 +64,7 @@ mod tests {
 
     #[test]
     fn cultivation_produces_positive_cycle() {
-        let mut rng = StdRng::seed_from_u64(0);
+        let mut rng = ChaCha12Rng::seed_from_u64(0);
         let outcome = factory().schedule_production(100, &mut rng);
         // Cultivation always produces (exponential distribution is non-negative)
         assert!(matches!(outcome, FactoryOutcome::Produced { .. }));
@@ -78,8 +79,8 @@ mod tests {
     #[test]
     fn cultivation_determinism() {
         let f = factory();
-        let o1 = f.schedule_production(0, &mut StdRng::seed_from_u64(99));
-        let o2 = f.schedule_production(0, &mut StdRng::seed_from_u64(99));
+        let o1 = f.schedule_production(0, &mut ChaCha12Rng::seed_from_u64(99));
+        let o2 = f.schedule_production(0, &mut ChaCha12Rng::seed_from_u64(99));
         assert_eq!(o1, o2);
     }
 
@@ -90,7 +91,7 @@ mod tests {
             lambda_raw: 1_000_000.0,
             code_distance: 17,
         };
-        let mut rng = StdRng::seed_from_u64(0);
+        let mut rng = ChaCha12Rng::seed_from_u64(0);
         for _ in 0..100 {
             let outcome = f.schedule_production(0, &mut rng);
             assert!(matches!(outcome, FactoryOutcome::Produced { .. }));

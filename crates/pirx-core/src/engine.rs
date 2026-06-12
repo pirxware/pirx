@@ -2,26 +2,30 @@
 //!
 //! `Engine` drives the circuit DAG through factory events, gate scheduling,
 //! magic state consumption, stall tracking, and injection error recovery.
-//! All stochastic decisions flow through an explicit `StdRng` seeded from
+//! All stochastic decisions flow through an explicit `ChaCha12Rng` seeded from
 //! [`EngineConfig::seed`], ensuring full reproducibility (same seed → same trace).
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 
-use pirx_hw::RoutingConfig;
-use pirx_hw::model::HardwareModel;
-use pirx_ir::ValidatedCircuit;
-use pirx_ir::circuit::{GridPosition, MeasurementHookId, MeasurementOutcome, OpId};
-use rand::{Rng as _, SeedableRng, rngs::StdRng};
-use slotmap::{Key as _, SecondaryMap};
+use pirx_hw::{RoutingConfig, model::HardwareModel};
+use pirx_ir::{
+    ValidatedCircuit,
+    circuit::{MeasurementHookId, MeasurementOutcome, OpId},
+};
+use rand::{Rng as _, SeedableRng};
+use rand_chacha::ChaCha12Rng;
+use slotmap::SecondaryMap;
 use smallvec::SmallVec;
 use thiserror::Error;
 
-use crate::buffer::MagicStateBuffer;
-use crate::dag::{Dag, DagBuild, DagError, FifoReadyQueue, OpKey, OpKind, ReadyQueue};
-use crate::events::{EngineEvent, EventQueue, TimedEvent};
-use crate::factory::{FactoryError, FactoryModel, FactoryOutcome, create_factories};
-use crate::routing;
-use crate::trace::{Trace, TraceCollector, TraceEventKind};
+use crate::{
+    buffer::MagicStateBuffer,
+    dag::{Dag, DagBuild, DagError, FifoReadyQueue, OpKey, OpKind, ReadyQueue},
+    events::{EngineEvent, EventQueue, TimedEvent},
+    factory::{FactoryError, FactoryModel, FactoryOutcome, create_factories},
+    routing,
+    trace::{SYNTHETIC_ID_FLAG, Trace, TraceCollector, TraceEventKind},
+};
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -109,19 +113,20 @@ pub struct Engine {
     factories: Vec<Box<dyn FactoryModel>>,
     buffer: MagicStateBuffer,
     routing: Box<dyn routing::RoutingModel>,
-    qubit_positions: Vec<GridPosition>,
+    position_index: Vec<(u32, u32)>,
 
     // Simulation state
     event_queue: EventQueue,
     current_cycle: u64,
-    rng: StdRng,
+    rng: ChaCha12Rng,
+    factory_rngs: Vec<ChaCha12Rng>,
     seed: u64,
     max_cycles: Option<u64>,
 
-    // Stalled T-gates: ready but waiting for a magic state
-    stalled_gates: VecDeque<OpKey>,
-    /// Cycle at which each gate entered the stall queue, for wait-time accounting.
-    stall_start: HashMap<OpKey, u64>,
+    // Stalled T-gates: ready but waiting for a magic state.
+    // Each entry pairs the gate key with the cycle it stalled, replacing the
+    // former HashMap<OpKey, u64> side-table with zero per-stall hashing.
+    stalled_gates: VecDeque<(OpKey, u64)>,
 
     // Measurement hook dispatch — flat table indexed by hook_id * 2 + outcome.
     // Pre-resolved at construction so the hot loop does a single Vec::get.
@@ -132,6 +137,10 @@ pub struct Engine {
     // Termination tracking (total_ops grows when fixups are injected or hooks activate)
     total_ops: u64,
     completed_ops: u64,
+
+    // Stable trace IDs: maps arena keys → IR OpId (or synthetic fixup ID).
+    key_to_op_id: SecondaryMap<OpKey, u64>,
+    next_synthetic_id: u64,
 
     // Trace collection (append-only, pre-allocated)
     trace: TraceCollector,
@@ -164,6 +173,12 @@ impl Engine {
         // Only count initially active ops; inactive ops enter via hook activation.
         let total_ops = dag.active_op_count() as u64;
 
+        // Reverse map: arena key → IR OpId for stable trace event IDs.
+        let mut key_to_op_id = SecondaryMap::with_capacity(n_ops.saturating_add(n_ops / 2));
+        for (&op_id, &key) in &id_to_key {
+            key_to_op_id.insert(key, op_id);
+        }
+
         // Validate routing compatibility.
         if matches!(hw.routing, RoutingConfig::Manhattan { .. })
             && circuit.qubit_positions.is_none()
@@ -171,7 +186,10 @@ impl Engine {
             return Err(EngineError::MissingQubitPositions);
         }
         let routing_model = routing::from_config(&hw.routing);
-        let qubit_positions = circuit.qubit_positions.clone().unwrap_or_default();
+        let position_index = routing::build_position_index(
+            circuit.qubit_positions.as_deref().unwrap_or(&[]),
+            circuit.qubit_count,
+        );
 
         // Create factory instances from hardware config.
         let factories = create_factories(&hw.factory, &hw.qec)?;
@@ -180,8 +198,20 @@ impl Engine {
         // Initialize buffer.
         let buffer = MagicStateBuffer::new(hw.buffer.capacity, hw.buffer.preload);
 
-        // Seed RNG — all stochastic decisions flow through this reference.
-        let mut rng = StdRng::seed_from_u64(config.seed);
+        // Master RNG for injection errors and measurement hooks.
+        let rng = ChaCha12Rng::seed_from_u64(config.seed);
+
+        // Per-factory child RNGs: deterministic derivation from master seed
+        // so factory N's sequence is stable regardless of total factory count.
+        let mut factory_rngs: Vec<ChaCha12Rng> = (0..factory_count)
+            .map(|i| {
+                let factory_seed = config
+                    .seed
+                    .wrapping_add(i as u64)
+                    .wrapping_mul(0x9E37_79B9_7F4A_7C15);
+                ChaCha12Rng::seed_from_u64(factory_seed)
+            })
+            .collect();
 
         // Build initial ready set: all ops with predecessor_count == 0.
         let mut ready_set = Box::new(FifoReadyQueue::with_capacity(n_ops)) as Box<dyn ReadyQueue>;
@@ -189,10 +219,10 @@ impl Engine {
             ready_set.push(key);
         }
 
-        // Capacity hint: ~5 events per gate + 3 per factory production round.
+        // Capacity hint: ~5 events per gate + ~10 per factory (scales with simulated time).
         let capacity_hint = n_ops
             .saturating_mul(5)
-            .saturating_add(factory_count.saturating_mul(3));
+            .saturating_add(factory_count.saturating_mul(10));
         let mut trace = TraceCollector::new(capacity_hint);
 
         // Build hook dispatch table: flat Vec indexed by hook_id * 2 + outcome.
@@ -231,7 +261,8 @@ impl Engine {
             #[allow(clippy::cast_possible_truncation)]
             let factory_id = id as u16;
             trace.record(0, TraceEventKind::FactoryStarted { factory_id });
-            let outcome = factory.schedule_production(0, &mut rng);
+            #[allow(clippy::indexing_slicing)]
+            let outcome = factory.schedule_production(0, &mut factory_rngs[id]);
             let (event_cycle, event) = match outcome {
                 FactoryOutcome::Produced { completion_cycle } => (
                     completion_cycle,
@@ -251,18 +282,23 @@ impl Engine {
             factories,
             buffer,
             routing: routing_model,
-            qubit_positions,
+            position_index,
             event_queue,
             current_cycle: 0,
             rng,
+            factory_rngs,
             seed: config.seed,
             max_cycles: config.max_cycles,
-            stalled_gates: VecDeque::new(),
-            stall_start: HashMap::new(),
+            #[allow(clippy::cast_possible_truncation)]
+            stalled_gates: VecDeque::with_capacity(
+                circuit.metadata.t_count.min(n_ops as u64) as usize
+            ),
             hook_table,
             completed_set: SecondaryMap::with_capacity(
                 n_ops.saturating_add(n_ops / 2).saturating_add(16),
             ),
+            key_to_op_id,
+            next_synthetic_id: 0,
             total_ops,
             completed_ops: 0,
             trace,
@@ -321,6 +357,16 @@ impl Engine {
         self.completed_ops >= self.total_ops
     }
 
+    // ── Trace ID resolution ──────────────────────────────────────────────────
+
+    /// Resolve an arena key to a stable trace ID.
+    ///
+    /// Original ops → IR `OpId`. Fixup nodes → `SYNTHETIC_ID_FLAG | counter`.
+    #[inline]
+    fn trace_id(&self, key: OpKey) -> u64 {
+        self.key_to_op_id.get(key).copied().unwrap_or(0)
+    }
+
     // ── Event processing ─────────────────────────────────────────────────────
 
     fn process_event(&mut self, event: TimedEvent) {
@@ -346,24 +392,22 @@ impl Engine {
                 self.start_factory(factory_id, event.cycle);
             }
             EngineEvent::GateCompleted { gate } => {
-                let gate_raw = gate.data().as_ffi();
-                // Distinguish fixup completions from regular gate completions.
-                if self.dag.get(gate).map(|op| op.kind) == Some(OpKind::Fixup) {
+                let gate_id = self.trace_id(gate);
+                let kind = self.dag.get(gate).map(|op| op.kind);
+                if kind == Some(OpKind::Fixup) {
                     self.trace.record(
                         event.cycle,
-                        TraceEventKind::FixupCompleted { fixup: gate_raw },
+                        TraceEventKind::FixupCompleted { fixup: gate_id },
                     );
                 } else {
-                    self.trace.record(
-                        event.cycle,
-                        TraceEventKind::GateCompleted { gate: gate_raw },
-                    );
+                    self.trace
+                        .record(event.cycle, TraceEventKind::GateCompleted { gate: gate_id });
                 }
                 self.completed_ops += 1;
                 if !self.hook_table.is_empty() {
                     self.completed_set.insert(gate, ());
                 }
-                self.complete_gate(gate);
+                self.complete_gate(gate, kind);
             }
         }
     }
@@ -374,32 +418,33 @@ impl Engine {
     /// inserts a fixup node (already in the ready queue) and increments
     /// `total_ops`. For measurements with hooks, samples the outcome and
     /// activates conditional ops. Otherwise, releases successors.
-    fn complete_gate(&mut self, gate: OpKey) {
-        let Some(kind) = self.dag.get(gate).map(|op| op.kind) else {
+    fn complete_gate(&mut self, gate: OpKey, kind: Option<OpKind>) {
+        let Some(kind) = kind else {
             return;
         };
 
         let inject = match kind {
             OpKind::TGate | OpKind::Rotation { .. } => {
-                // r#gen: `gen` is a reserved keyword in Rust 2024 edition.
-                self.rng.r#gen::<f64>() < self.injection_error_probability
+                self.rng.random::<f64>() < self.injection_error_probability
             }
             OpKind::Clifford | OpKind::Measurement { .. } | OpKind::Fixup => false,
         };
 
         if inject {
-            let gate_raw = gate.data().as_ffi();
+            let gate_id = self.trace_id(gate);
             self.trace.record(
                 self.current_cycle,
-                TraceEventKind::InjectionError { gate: gate_raw },
+                TraceEventKind::InjectionError { gate: gate_id },
             );
-            let fixup = self.dag.inject_fixup(gate, &mut *self.ready_set);
-            let fixup_raw = fixup.data().as_ffi();
+            let fixup_key = self.dag.inject_fixup(gate, &mut *self.ready_set);
+            let synthetic_id = SYNTHETIC_ID_FLAG | self.next_synthetic_id;
+            self.next_synthetic_id += 1;
+            self.key_to_op_id.insert(fixup_key, synthetic_id);
             self.trace.record(
                 self.current_cycle,
                 TraceEventKind::FixupInserted {
-                    fixup: fixup_raw,
-                    original: gate_raw,
+                    fixup: synthetic_id,
+                    original: gate_id,
                 },
             );
             // Fixup is now in ready_set. Count it so is_complete() stays correct.
@@ -417,9 +462,9 @@ impl Engine {
 
     /// Sample a measurement outcome and activate the corresponding ops.
     fn dispatch_hook(&mut self, gate: OpKey, hook_id: MeasurementHookId) {
-        let gate_raw = gate.data().as_ffi();
+        let gate_id = self.trace_id(gate);
 
-        let outcome = if self.rng.r#gen::<bool>() {
+        let outcome = if self.rng.random::<bool>() {
             MeasurementOutcome::One
         } else {
             MeasurementOutcome::Zero
@@ -428,7 +473,7 @@ impl Engine {
         self.trace.record(
             self.current_cycle,
             TraceEventKind::MeasurementOutcome {
-                gate: gate_raw,
+                gate: gate_id,
                 outcome,
             },
         );
@@ -455,7 +500,7 @@ impl Engine {
         self.trace.record(
             self.current_cycle,
             TraceEventKind::OpsActivated {
-                gate: gate_raw,
+                gate: gate_id,
                 activated_count,
             },
         );
@@ -467,22 +512,22 @@ impl Engine {
         let (base_cost, routing_cost) = if let Some(op) = self.dag.get(gate) {
             let rc = self
                 .routing
-                .latency(op.qubits.as_slice(), &self.qubit_positions);
+                .latency(op.qubits.as_slice(), &self.position_index);
             (op.cycle_cost, rc)
         } else {
             (1, 0)
         };
 
         if routing_cost > 0 {
-            let gate_raw = gate.data().as_ffi();
+            let gate_id = self.trace_id(gate);
             self.trace.record(
                 self.current_cycle,
-                TraceEventKind::RoutingStarted { gate: gate_raw },
+                TraceEventKind::RoutingStarted { gate: gate_id },
             );
             self.trace.record(
                 self.current_cycle,
                 TraceEventKind::RoutingCompleted {
-                    gate: gate_raw,
+                    gate: gate_id,
                     latency: routing_cost,
                 },
             );
@@ -497,10 +542,10 @@ impl Engine {
     /// are moved to `stalled_gates`. All other gate kinds are scheduled directly.
     fn schedule_ready_gates(&mut self) {
         while let Some(gate) = self.ready_set.pop() {
-            let gate_raw = gate.data().as_ffi();
+            let gate_id = self.trace_id(gate);
             self.trace.record(
                 self.current_cycle,
-                TraceEventKind::GateReady { gate: gate_raw },
+                TraceEventKind::GateReady { gate: gate_id },
             );
 
             let needs_magic_state = matches!(
@@ -519,7 +564,7 @@ impl Engine {
                     self.trace.record(
                         self.current_cycle,
                         TraceEventKind::GateServed {
-                            gate: gate_raw,
+                            gate: gate_id,
                             wait: 0,
                         },
                     );
@@ -527,15 +572,14 @@ impl Engine {
                 } else {
                     self.trace.record(
                         self.current_cycle,
-                        TraceEventKind::GateStalled { gate: gate_raw },
+                        TraceEventKind::GateStalled { gate: gate_id },
                     );
-                    self.stalled_gates.push_back(gate);
-                    self.stall_start.insert(gate, self.current_cycle);
+                    self.stalled_gates.push_back((gate, self.current_cycle));
                 }
             } else {
                 self.trace.record(
                     self.current_cycle,
-                    TraceEventKind::GateScheduled { gate: gate_raw },
+                    TraceEventKind::GateScheduled { gate: gate_id },
                 );
                 self.schedule_gate_completion(gate);
             }
@@ -559,17 +603,14 @@ impl Engine {
     fn try_serve_stalled_gates(&mut self) {
         // Serve from the front. On buffer exhaustion, break — the front gate and
         // everything behind it stay queued in FIFO order. No scratch allocation.
-        while let Some(&gate) = self.stalled_gates.front() {
+        while let Some(&(gate, stall_cycle)) = self.stalled_gates.front() {
             if !self.buffer.try_dequeue() {
                 break;
             }
             self.stalled_gates.pop_front();
 
-            let stall_cycle = self.stall_start.remove(&gate).unwrap_or(self.current_cycle);
-            let wait_u64 = self.current_cycle.saturating_sub(stall_cycle);
-            // Stall durations fit in u32 for any realistic simulation;
-            // saturate to MAX rather than truncate silently.
-            let wait = u32::try_from(wait_u64).unwrap_or(u32::MAX);
+            let wait =
+                u32::try_from(self.current_cycle.saturating_sub(stall_cycle)).unwrap_or(u32::MAX);
 
             self.trace.record(
                 self.current_cycle,
@@ -580,7 +621,7 @@ impl Engine {
             self.trace.record(
                 self.current_cycle,
                 TraceEventKind::GateServed {
-                    gate: gate.data().as_ffi(),
+                    gate: self.trace_id(gate),
                     wait,
                 },
             );
@@ -597,10 +638,11 @@ impl Engine {
         if idx >= self.factories.len() {
             return;
         }
-        // Split borrow: factories[idx] and rng are different fields.
+        // Split borrow: factories[idx] and factory_rngs[idx] are different fields.
         // idx is bounds-checked above, so indexing cannot panic.
         #[allow(clippy::indexing_slicing)]
-        let outcome = self.factories[idx].schedule_production(current_cycle, &mut self.rng);
+        let outcome =
+            self.factories[idx].schedule_production(current_cycle, &mut self.factory_rngs[idx]);
         let (event_cycle, event) = match outcome {
             FactoryOutcome::Produced { completion_cycle } => (
                 completion_cycle,
@@ -626,13 +668,17 @@ impl Engine {
     clippy::indexing_slicing
 )]
 mod tests {
-    use pirx_hw::model::{
-        BufferConfig, FactoryConfig, HardwareModel, InjectionConfig, MetaConfig, QecConfig,
-        TimingConfig,
+    use pirx_hw::{
+        CodeType, RoutingConfig,
+        model::{
+            BufferConfig, FactoryConfig, HardwareModel, InjectionConfig, MetaConfig, QecConfig,
+            TimingConfig,
+        },
     };
-    use pirx_hw::{CodeType, RoutingConfig};
-    use pirx_ir::ValidatedCircuit;
-    use pirx_ir::circuit::{CircuitMetadata, OpKind as IrOpKind, Operation, ProfilerCircuit};
+    use pirx_ir::{
+        ValidatedCircuit,
+        circuit::{CircuitMetadata, OpKind as IrOpKind, Operation, ProfilerCircuit},
+    };
     use smallvec::smallvec;
 
     use super::{Engine, EngineConfig, EngineError};

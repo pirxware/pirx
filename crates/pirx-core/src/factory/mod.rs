@@ -10,9 +10,8 @@ mod distillation;
 
 pub use cultivation::CultivationFactory;
 pub use distillation::DistillationFactory;
-
 use pirx_hw::model::{FactoryConfig, QecConfig};
-use rand::rngs::StdRng;
+use rand_chacha::ChaCha12Rng;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -44,7 +43,7 @@ pub trait FactoryModel: Send {
     /// The caller (engine) schedules the corresponding `EngineEvent` and
     /// restarts the factory after each outcome. The factory never touches
     /// the buffer, emits trace events, or inspects the event queue.
-    fn schedule_production(&self, current_cycle: u64, rng: &mut StdRng) -> FactoryOutcome;
+    fn schedule_production(&self, current_cycle: u64, rng: &mut ChaCha12Rng) -> FactoryOutcome;
 
     /// Human-readable name for reports and trace headers.
     fn name(&self) -> &str;

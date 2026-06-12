@@ -8,8 +8,10 @@
 use std::collections::{HashMap, VecDeque};
 
 use pirx_hw::model::HardwareModel;
-use pirx_ir::ValidatedCircuit;
-use pirx_ir::circuit::{MeasurementHookId, OpId, OpKind as IrOpKind, QubitId};
+use pirx_ir::{
+    ValidatedCircuit,
+    circuit::{MeasurementHookId, OpId, OpKind as IrOpKind, QubitId},
+};
 use serde::{Deserialize, Serialize};
 use slotmap::{SecondaryMap, SlotMap, new_key_type};
 use smallvec::SmallVec;
@@ -442,15 +444,19 @@ fn ir_kind_to_engine(kind: &IrOpKind, angle_table: &mut Vec<f64>) -> Result<OpKi
     clippy::panic
 )]
 mod tests {
-    use pirx_hw::model::{
-        BufferConfig, DistillationProtocol, FactoryConfig, HardwareModel, InjectionConfig,
-        MetaConfig, QecConfig, TimingConfig,
+    use pirx_hw::{
+        CodeType, RoutingConfig,
+        model::{
+            BufferConfig, DistillationProtocol, FactoryConfig, HardwareModel, InjectionConfig,
+            MetaConfig, QecConfig, TimingConfig,
+        },
     };
-    use pirx_hw::{CodeType, RoutingConfig};
-    use pirx_ir::ValidatedCircuit;
-    use pirx_ir::circuit::{
-        CircuitMetadata, ConditionalActivation, Dependency, MeasurementHook, MeasurementOutcome,
-        OpKind as IrOpKind, Operation, ProfilerCircuit,
+    use pirx_ir::{
+        ValidatedCircuit,
+        circuit::{
+            CircuitMetadata, ConditionalActivation, Dependency, MeasurementHook,
+            MeasurementOutcome, OpKind as IrOpKind, Operation, ProfilerCircuit,
+        },
     };
     use smallvec::smallvec;
 

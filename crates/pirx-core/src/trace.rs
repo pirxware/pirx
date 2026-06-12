@@ -1,9 +1,19 @@
 //! Trace event types — collected during simulation, analyzed after.
 //!
-//! 24 bytes per event (cycle: 8 + kind: 16). Append-only during
+//! 32 bytes per event (cycle: 8 + kind: 24). Append-only during
 //! simulation, immutable after. Analyzed by the profile analyzer.
 
 use serde::{Deserialize, Serialize};
+
+const _: () = assert!(std::mem::size_of::<TraceEvent>() == 32);
+
+/// Bit flag for synthetic (fixup) operation IDs in trace events.
+///
+/// Original circuit operations carry their IR `OpId` directly.
+/// Fixup nodes injected by the engine carry `SYNTHETIC_ID_FLAG | counter`.
+/// [`TraceEventKind::FixupInserted`] links the two: `original` is the IR OpId,
+/// `fixup` is the synthetic ID.
+pub const SYNTHETIC_ID_FLAG: u64 = 1 << 63;
 
 /// A single timestamped event in the execution trace.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -101,10 +111,9 @@ pub struct Trace {
     pub truncated: bool,
 }
 
-/// Append-only event accumulator used inside the simulation hot loop.
-///
-/// Pre-allocated at construction. `record` is the only write path — no
-/// branching, no allocation after `new`. Sealed into a `Trace` via `finish`.
+/// Append-only event accumulator. Pre-allocated with a best-effort hint.
+/// Growth beyond the hint is amortized O(1) per event — acceptable for
+/// the trace collector, which is not on the simulation critical path.
 pub struct TraceCollector {
     events: Vec<TraceEvent>,
 }

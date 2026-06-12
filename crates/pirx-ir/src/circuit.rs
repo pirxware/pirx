@@ -115,8 +115,9 @@ pub struct CircuitMetadata {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
-    use super::*;
     use smallvec::smallvec;
+
+    use super::*;
 
     /// Constructing a circuit with inactive ops and hooks compiles and
     /// all fields are accessible — validates the public API surface.

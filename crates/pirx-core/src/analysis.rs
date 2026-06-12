@@ -34,7 +34,9 @@ pub enum BottleneckType {
 pub struct StallRecord {
     /// Cycle at which the gate was finally served.
     pub cycle: u64,
-    /// Raw gate identifier (matches [`pirx_ir::circuit::OpId`]).
+    /// Operation identifier from the execution trace.
+    /// Original operations: matches `OpId` from the IR circuit.
+    /// Fixup nodes: synthetic ID with bit 63 set ([`SYNTHETIC_ID_FLAG`](crate::trace::SYNTHETIC_ID_FLAG)).
     pub gate_id: u64,
     /// Cycles the gate spent waiting for a magic state.
     pub wait_cycles: u64,
@@ -264,16 +266,17 @@ mod tests {
             TimingConfig,
         },
     };
-    use pirx_ir::ValidatedCircuit;
-    use pirx_ir::circuit::{CircuitMetadata, Dependency, OpKind, Operation, ProfilerCircuit};
+    use pirx_ir::{
+        ValidatedCircuit,
+        circuit::{CircuitMetadata, Dependency, OpKind, Operation, ProfilerCircuit},
+    };
     use smallvec::smallvec;
 
+    use super::{BottleneckType, ProfileAnalyzer};
     use crate::{
         engine::{Engine, EngineConfig},
         trace::TraceEventKind,
     };
-
-    use super::{BottleneckType, ProfileAnalyzer};
 
     fn validated(circuit: ProfilerCircuit) -> ValidatedCircuit {
         pirx_ir::validate::validate(circuit).expect("test fixture must be valid")

@@ -215,12 +215,13 @@ pub fn validate(circuit: ProfilerCircuit) -> Result<ValidatedCircuit, Validation
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
+    use smallvec::smallvec;
+
     use super::*;
     use crate::circuit::{
         CircuitMetadata, ConditionalActivation, Dependency, GridPosition, MeasurementHook,
         MeasurementOutcome, OpKind, Operation, ProfilerCircuit,
     };
-    use smallvec::smallvec;
 
     fn test_meta() -> CircuitMetadata {
         CircuitMetadata {

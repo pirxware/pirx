@@ -573,7 +573,11 @@ dependencies = [
  "pirx-core",
  "pirx-hw",
  "pirx-ir",
+ "pirx-testkit",
+ "serde",
  "serde_json",
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]

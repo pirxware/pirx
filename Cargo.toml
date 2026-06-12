@@ -48,6 +48,9 @@ clap = { version = "4", features = ["derive"] }
 # Parallel sensitivity sweep
 rayon = "1"
 
+# Testing
+tempfile = "3"
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 

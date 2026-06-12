@@ -593,8 +593,10 @@ capacity = 4
 
     #[test]
     fn rejects_preload_exceeds_capacity() {
-        let toml = valid_toml(cultivation_factory())
-            .replace("[buffer]\ncapacity = 4", "[buffer]\ncapacity = 4\npreload = 10");
+        let toml = valid_toml(cultivation_factory()).replace(
+            "[buffer]\ncapacity = 4",
+            "[buffer]\ncapacity = 4\npreload = 10",
+        );
         assert!(matches!(
             load(&toml),
             Err(HardwareModelError::PreloadExceedsCapacity {

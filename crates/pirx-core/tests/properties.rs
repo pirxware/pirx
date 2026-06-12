@@ -28,7 +28,7 @@ proptest! {
         let mut hw = pirx_testkit::cultivation_hw();
         hw.buffer.preload = 4;
 
-        let trace = Engine::new(&circuit, &hw, EngineConfig { seed })
+        let trace = Engine::new(&circuit, &hw, EngineConfig { seed, max_cycles: None })
             .unwrap()
             .run();
 
@@ -54,7 +54,7 @@ proptest! {
         let circuit = pirx_testkit::validated(pirx_testkit::t_gate_chain(10));
         let hw = pirx_testkit::cultivation_hw();
 
-        let trace = Engine::new(&circuit, &hw, EngineConfig { seed })
+        let trace = Engine::new(&circuit, &hw, EngineConfig { seed, max_cycles: None })
             .unwrap()
             .run();
 
@@ -73,7 +73,7 @@ proptest! {
     #[test]
     fn determinism(seed in 0u64..10_000) {
         let circuit = pirx_testkit::validated(pirx_testkit::t_gate_chain(8));
-        let config = EngineConfig { seed };
+        let config = EngineConfig { seed, max_cycles: None };
 
         let t1 = Engine::new(&circuit, &pirx_testkit::cultivation_hw(), config)
             .unwrap()
@@ -95,7 +95,7 @@ proptest! {
         let mut hw = pirx_testkit::cultivation_hw();
         hw.buffer = BufferConfig { capacity, preload: 0 };
 
-        let trace = Engine::new(&circuit, &hw, EngineConfig { seed })
+        let trace = Engine::new(&circuit, &hw, EngineConfig { seed, max_cycles: None })
             .unwrap()
             .run();
 
@@ -135,8 +135,8 @@ proptest! {
             fault_distance: 3,
         };
 
-        let t1 = Engine::new(&circuit, &hw1, EngineConfig { seed }).unwrap().run();
-        let t2 = Engine::new(&circuit, &hw2, EngineConfig { seed }).unwrap().run();
+        let t1 = Engine::new(&circuit, &hw1, EngineConfig { seed, max_cycles: None }).unwrap().run();
+        let t2 = Engine::new(&circuit, &hw2, EngineConfig { seed, max_cycles: None }).unwrap().run();
 
         prop_assert!(
             t2.total_cycles <= t1.total_cycles,
@@ -153,7 +153,7 @@ proptest! {
         let circuit = pirx_testkit::validated(pirx_testkit::clifford_chain(n));
         let hw = pirx_testkit::cultivation_hw();
 
-        let trace = Engine::new(&circuit, &hw, EngineConfig { seed })
+        let trace = Engine::new(&circuit, &hw, EngineConfig { seed, max_cycles: None })
             .unwrap()
             .run();
 
@@ -175,7 +175,7 @@ proptest! {
         let mut hw = pirx_testkit::cultivation_hw();
         hw.injection.error_probability = 0.0;
 
-        let trace = Engine::new(&circuit, &hw, EngineConfig { seed })
+        let trace = Engine::new(&circuit, &hw, EngineConfig { seed, max_cycles: None })
             .unwrap()
             .run();
 
@@ -200,7 +200,7 @@ proptest! {
     fn hook_determinism(seed in 0u64..10_000) {
         let circuit = pirx_testkit::validated(pirx_testkit::measurement_with_both_outcomes());
         let hw = pirx_testkit::cultivation_hw();
-        let config = EngineConfig { seed };
+        let config = EngineConfig { seed, max_cycles: None };
 
         let t1 = Engine::new(&circuit, &hw, config).unwrap().run();
         let t2 = Engine::new(&circuit, &hw, config).unwrap().run();
@@ -217,7 +217,7 @@ proptest! {
         let circuit = pirx_testkit::validated(pirx_testkit::measurement_with_one_hook());
         let hw = pirx_testkit::cultivation_hw();
 
-        let trace = Engine::new(&circuit, &hw, EngineConfig { seed })
+        let trace = Engine::new(&circuit, &hw, EngineConfig { seed, max_cycles: None })
             .unwrap()
             .run();
 
@@ -249,5 +249,40 @@ proptest! {
             "completed ({}) must equal initially_active ({}) + activated ({}) + fixups ({})",
             completed, initially_active, activated, fixups
         );
+    }
+
+    /// max_cycles always bounds total_cycles and sets truncated when the simulation
+    /// would otherwise run longer.
+    #[test]
+    fn max_cycles_bounds_total_cycles(seed in 0u64..5_000, max in 1u64..200) {
+        let circuit = pirx_testkit::validated(pirx_testkit::t_gate_chain(10));
+        let mut hw = pirx_testkit::cultivation_hw();
+        hw.buffer.preload = 0;
+
+        let trace = Engine::new(&circuit, &hw, EngineConfig { seed, max_cycles: Some(max) })
+            .unwrap()
+            .run();
+
+        if trace.truncated {
+            prop_assert!(
+                trace.total_cycles <= max,
+                "truncated trace total_cycles ({}) must not exceed max_cycles ({})",
+                trace.total_cycles, max
+            );
+        }
+    }
+
+    /// max_cycles=None always completes (same as today — no truncation).
+    #[test]
+    fn no_max_cycles_completes(seed in 0u64..5_000) {
+        let circuit = pirx_testkit::validated(pirx_testkit::t_gate_chain(4));
+        let mut hw = pirx_testkit::cultivation_hw();
+        hw.buffer.preload = 4;
+
+        let trace = Engine::new(&circuit, &hw, EngineConfig { seed, max_cycles: None })
+            .unwrap()
+            .run();
+
+        prop_assert!(!trace.truncated, "must not truncate without max_cycles");
     }
 }

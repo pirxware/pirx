@@ -229,7 +229,10 @@ fn single_clifford() {
     let trace = Engine::new(
         &validated(circuit_clifford()),
         &cultivation_hw(),
-        EngineConfig { seed: 0 },
+        EngineConfig {
+            seed: 0,
+            max_cycles: None,
+        },
     )
     .unwrap()
     .run();
@@ -267,9 +270,16 @@ fn single_t_gate_served_immediately() {
     let mut hw = cultivation_hw();
     hw.buffer.preload = 1;
 
-    let trace = Engine::new(&validated(circuit_t_gate()), &hw, EngineConfig { seed: 0 })
-        .unwrap()
-        .run();
+    let trace = Engine::new(
+        &validated(circuit_t_gate()),
+        &hw,
+        EngineConfig {
+            seed: 0,
+            max_cycles: None,
+        },
+    )
+    .unwrap()
+    .run();
 
     let served: Vec<_> = trace
         .events
@@ -293,9 +303,16 @@ fn single_t_gate_served_immediately() {
 fn t_gate_stalls_then_served() {
     let hw = minimal_distillation_hw(1, 1, 0);
 
-    let trace = Engine::new(&validated(circuit_two_t_gates()), &hw, EngineConfig { seed: 0 })
-        .unwrap()
-        .run();
+    let trace = Engine::new(
+        &validated(circuit_two_t_gates()),
+        &hw,
+        EngineConfig {
+            seed: 0,
+            max_cycles: None,
+        },
+    )
+    .unwrap()
+    .run();
 
     assert!(
         trace
@@ -325,9 +342,16 @@ fn chain_respects_dependencies() {
     // Pre-load the buffer so the T-gate is served without waiting on factory timing.
     hw.buffer.preload = 1;
 
-    let trace = Engine::new(&validated(circuit_chain()), &hw, EngineConfig { seed: 0 })
-        .unwrap()
-        .run();
+    let trace = Engine::new(
+        &validated(circuit_chain()),
+        &hw,
+        EngineConfig {
+            seed: 0,
+            max_cycles: None,
+        },
+    )
+    .unwrap()
+    .run();
 
     let completed_cycles: Vec<u64> = trace
         .events
@@ -368,7 +392,10 @@ fn parallel_cliffords() {
     let trace = Engine::new(
         &validated(circuit_three_cliffords()),
         &cultivation_hw(),
-        EngineConfig { seed: 0 },
+        EngineConfig {
+            seed: 0,
+            max_cycles: None,
+        },
     )
     .unwrap()
     .run();
@@ -406,7 +433,10 @@ fn parallel_cliffords() {
 #[test]
 fn determinism() {
     let circuit = validated(circuit_chain());
-    let config = EngineConfig { seed: 42 };
+    let config = EngineConfig {
+        seed: 42,
+        max_cycles: None,
+    };
 
     let t1 = Engine::new(&circuit, &cultivation_hw(), config)
         .unwrap()
@@ -443,9 +473,16 @@ fn injection_fixup_extends_trace() {
         .find_map(|seed| {
             let mut hw = cultivation_hw();
             hw.buffer.preload = 1; // T-gate served immediately so injection can fire
-            let t = Engine::new(&circuit, &hw, EngineConfig { seed })
-                .unwrap()
-                .run();
+            let t = Engine::new(
+                &circuit,
+                &hw,
+                EngineConfig {
+                    seed,
+                    max_cycles: None,
+                },
+            )
+            .unwrap()
+            .run();
             if t.events
                 .iter()
                 .any(|e| matches!(e.kind, TraceEventKind::InjectionError { .. }))
@@ -494,9 +531,16 @@ fn hook_circuit_terminates() {
     hw.injection.error_probability = 0.0;
 
     for seed in 0u64..100 {
-        let trace = Engine::new(&circuit, &hw, EngineConfig { seed })
-            .unwrap()
-            .run();
+        let trace = Engine::new(
+            &circuit,
+            &hw,
+            EngineConfig {
+                seed,
+                max_cycles: None,
+            },
+        )
+        .unwrap()
+        .run();
 
         assert!(
             trace.total_cycles > 0,
@@ -526,9 +570,16 @@ fn hook_both_outcomes_covered() {
     let mut saw_one = false;
 
     for seed in 0u64..200 {
-        let trace = Engine::new(&circuit, &hw, EngineConfig { seed })
-            .unwrap()
-            .run();
+        let trace = Engine::new(
+            &circuit,
+            &hw,
+            EngineConfig {
+                seed,
+                max_cycles: None,
+            },
+        )
+        .unwrap()
+        .run();
 
         let outcomes: Vec<_> = trace
             .events
@@ -570,7 +621,97 @@ fn hook_both_outcomes_covered() {
     assert!(saw_one, "One outcome must appear in 200 seeds");
 }
 
-/// 10. Hook-activated T-gate can trigger injection error + fixup.
+/// 10. max_cycles truncates the simulation before all ops complete.
+///
+/// A T-gate chain with no buffer preload takes many cycles (factory must
+/// produce states). With max_cycles=10, the engine stops before the first
+/// factory production (at cycle 54). total_cycles reflects the last
+/// processed cycle, which must be strictly below max_cycles.
+#[test]
+fn max_cycles_truncates() {
+    let hw = minimal_distillation_hw(1, 1, 0);
+    let circuit = validated(circuit_two_t_gates());
+    let config = EngineConfig {
+        seed: 0,
+        max_cycles: Some(10),
+    };
+
+    let trace = Engine::new(&circuit, &hw, config).unwrap().run();
+
+    assert!(
+        trace.truncated,
+        "trace must be truncated when max_cycles is hit"
+    );
+    assert!(
+        trace.total_cycles < 10,
+        "total_cycles ({}) must be below max_cycles (10) — the engine stops before \
+         processing events at the limit cycle",
+        trace.total_cycles
+    );
+    // Verify the uncapped run would take longer.
+    let full = Engine::new(
+        &validated(circuit_two_t_gates()),
+        &minimal_distillation_hw(1, 1, 0),
+        EngineConfig {
+            seed: 0,
+            max_cycles: None,
+        },
+    )
+    .unwrap()
+    .run();
+    assert!(!full.truncated, "uncapped run must complete normally");
+    assert!(
+        full.total_cycles > 10,
+        "uncapped run ({} cycles) must exceed the max_cycles limit",
+        full.total_cycles
+    );
+}
+
+/// 11. max_cycles=None runs to completion (same as before).
+#[test]
+fn max_cycles_none_completes() {
+    let hw = minimal_distillation_hw(1, 1, 1);
+    let circuit = validated(circuit_t_gate());
+    let config = EngineConfig {
+        seed: 0,
+        max_cycles: None,
+    };
+
+    let trace = Engine::new(&circuit, &hw, config).unwrap().run();
+
+    assert!(
+        !trace.truncated,
+        "trace must not be truncated without max_cycles"
+    );
+    assert!(
+        trace
+            .events
+            .iter()
+            .any(|e| matches!(e.kind, TraceEventKind::GateCompleted { .. })),
+        "gate must complete when max_cycles is None"
+    );
+}
+
+/// 12. max_cycles larger than actual simulation length does not truncate.
+#[test]
+fn max_cycles_larger_than_needed() {
+    let mut hw = cultivation_hw();
+    hw.injection.error_probability = 0.0;
+    let circuit = validated(circuit_clifford());
+    let config = EngineConfig {
+        seed: 0,
+        max_cycles: Some(1_000_000),
+    };
+
+    let trace = Engine::new(&circuit, &hw, config).unwrap().run();
+
+    assert!(
+        !trace.truncated,
+        "trace must not be truncated when max_cycles exceeds actual simulation length"
+    );
+}
+
+/// 13. Hook-activated T-gate can trigger injection error + fixup.
 ///
 /// Verifies the interaction: measurement → hook activates T-gate → T-gate
 /// may trigger injection error → fixup inserted and completed.
@@ -583,9 +724,16 @@ fn hook_activates_t_gate_with_injection() {
         .find_map(|seed| {
             let mut hw = cultivation_hw();
             hw.buffer.preload = 1;
-            let t = Engine::new(&circuit, &hw, EngineConfig { seed })
-                .unwrap()
-                .run();
+            let t = Engine::new(
+                &circuit,
+                &hw,
+                EngineConfig {
+                    seed,
+                    max_cycles: None,
+                },
+            )
+            .unwrap()
+            .run();
 
             let has_activation = t
                 .events

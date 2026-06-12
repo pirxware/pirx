@@ -354,9 +354,16 @@ mod tests {
     fn total_cycles_matches_trace() {
         let circuit = validated(chain_5_t_gates());
         let hw = cultivation_cold(1);
-        let trace = Engine::new(&circuit, &hw, EngineConfig { seed: 0 })
-            .unwrap()
-            .run();
+        let trace = Engine::new(
+            &circuit,
+            &hw,
+            EngineConfig {
+                seed: 0,
+                max_cycles: None,
+            },
+        )
+        .unwrap()
+        .run();
 
         let expected = trace.total_cycles;
         let profile = ProfileAnalyzer::analyze(&trace, 1, 10);
@@ -369,9 +376,16 @@ mod tests {
     fn injection_errors_count_matches_trace() {
         let circuit = validated(chain_5_t_gates());
         let hw = cultivation_cold(1);
-        let trace = Engine::new(&circuit, &hw, EngineConfig { seed: 0 })
-            .unwrap()
-            .run();
+        let trace = Engine::new(
+            &circuit,
+            &hw,
+            EngineConfig {
+                seed: 0,
+                max_cycles: None,
+            },
+        )
+        .unwrap()
+        .run();
 
         let trace_count = trace
             .events
@@ -388,9 +402,16 @@ mod tests {
     fn factory_utilization_in_range() {
         let circuit = validated(chain_5_t_gates());
         let hw = cultivation_cold(2);
-        let trace = Engine::new(&circuit, &hw, EngineConfig { seed: 42 })
-            .unwrap()
-            .run();
+        let trace = Engine::new(
+            &circuit,
+            &hw,
+            EngineConfig {
+                seed: 42,
+                max_cycles: None,
+            },
+        )
+        .unwrap()
+        .run();
 
         let profile = ProfileAnalyzer::analyze(&trace, 2, 5);
 
@@ -413,9 +434,16 @@ mod tests {
     fn stall_events_nonempty_on_cold_start() {
         let circuit = validated(chain_5_t_gates());
         let hw = cultivation_cold(1);
-        let trace = Engine::new(&circuit, &hw, EngineConfig { seed: 7 })
-            .unwrap()
-            .run();
+        let trace = Engine::new(
+            &circuit,
+            &hw,
+            EngineConfig {
+                seed: 7,
+                max_cycles: None,
+            },
+        )
+        .unwrap()
+        .run();
 
         // Confirm the trace itself has stalled-then-served events.
         assert!(
@@ -438,9 +466,16 @@ mod tests {
     fn profile_vector_lengths_consistent() {
         let circuit = validated(chain_5_t_gates());
         let hw = cultivation_cold(1);
-        let trace = Engine::new(&circuit, &hw, EngineConfig { seed: 1 })
-            .unwrap()
-            .run();
+        let trace = Engine::new(
+            &circuit,
+            &hw,
+            EngineConfig {
+                seed: 1,
+                max_cycles: None,
+            },
+        )
+        .unwrap()
+        .run();
 
         let resolution = 8;
         let profile = ProfileAnalyzer::analyze(&trace, 1, resolution);
@@ -460,9 +495,16 @@ mod tests {
         let mut hw = cultivation_cold(1);
         hw.injection.error_probability = 0.0;
         hw.buffer.preload = 4; // warm start so T-gates don't stall
-        let trace = Engine::new(&circuit, &hw, EngineConfig { seed: 99 })
-            .unwrap()
-            .run();
+        let trace = Engine::new(
+            &circuit,
+            &hw,
+            EngineConfig {
+                seed: 99,
+                max_cycles: None,
+            },
+        )
+        .unwrap()
+        .run();
 
         let profile = ProfileAnalyzer::analyze(&trace, 1, 1);
         assert_eq!(profile.injection_errors, 0);
@@ -495,9 +537,16 @@ mod tests {
             },
         });
         let hw = cultivation_cold(1);
-        let trace = Engine::new(&clifford, &hw, EngineConfig { seed: 0 })
-            .unwrap()
-            .run();
+        let trace = Engine::new(
+            &clifford,
+            &hw,
+            EngineConfig {
+                seed: 0,
+                max_cycles: None,
+            },
+        )
+        .unwrap()
+        .run();
 
         let profile = ProfileAnalyzer::analyze(&trace, 1, 1);
         for (i, &bt) in profile.bottleneck_type.iter().enumerate() {

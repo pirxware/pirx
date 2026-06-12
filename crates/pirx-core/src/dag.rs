@@ -227,9 +227,9 @@ impl Dag {
             let &from_key = id_to_key.get(&dep.from).ok_or_else(|| {
                 DagError::Internal(format!("dep.from {} not in id_to_key", dep.from))
             })?;
-            let &to_key = id_to_key.get(&dep.to).ok_or_else(|| {
-                DagError::Internal(format!("dep.to {} not in id_to_key", dep.to))
-            })?;
+            let &to_key = id_to_key
+                .get(&dep.to)
+                .ok_or_else(|| DagError::Internal(format!("dep.to {} not in id_to_key", dep.to)))?;
             if let Some(succs) = successors.get_mut(from_key) {
                 succs.push(to_key);
             }
@@ -541,7 +541,9 @@ mod tests {
     #[test]
     fn from_circuit_simple_chain() {
         let hw = minimal_hw();
-        let dag = Dag::from_circuit(&validated(chain_circuit(2)), &hw).expect("valid chain").dag;
+        let dag = Dag::from_circuit(&validated(chain_circuit(2)), &hw)
+            .expect("valid chain")
+            .dag;
         assert_eq!(dag.op_count(), 2);
         let roots = dag.initial_ready_set();
         assert_eq!(roots.len(), 1);
@@ -639,7 +641,9 @@ mod tests {
     fn release_successors_decrements() {
         let hw = minimal_hw();
         // A → B → C
-        let mut dag = Dag::from_circuit(&validated(chain_circuit(3)), &hw).expect("valid").dag;
+        let mut dag = Dag::from_circuit(&validated(chain_circuit(3)), &hw)
+            .expect("valid")
+            .dag;
         let roots = dag.initial_ready_set();
         assert_eq!(roots.len(), 1);
         let key_a = roots[0];
@@ -668,7 +672,9 @@ mod tests {
     fn inject_fixup_rewires() {
         let hw = minimal_hw();
         // A(0) → B(1) → C(2)
-        let mut dag = Dag::from_circuit(&validated(chain_circuit(3)), &hw).expect("valid").dag;
+        let mut dag = Dag::from_circuit(&validated(chain_circuit(3)), &hw)
+            .expect("valid")
+            .dag;
 
         let key_a = dag.initial_ready_set()[0];
         let key_b = dag
@@ -725,7 +731,9 @@ mod tests {
     #[test]
     fn inject_fixup_sets_active_true() {
         let hw = minimal_hw();
-        let mut dag = Dag::from_circuit(&validated(chain_circuit(2)), &hw).expect("valid").dag;
+        let mut dag = Dag::from_circuit(&validated(chain_circuit(2)), &hw)
+            .expect("valid")
+            .dag;
         let key_a = dag.initial_ready_set()[0];
         let mut queue = FifoReadyQueue::new();
         let key_f = dag.inject_fixup(key_a, &mut queue);

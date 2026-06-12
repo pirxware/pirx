@@ -30,6 +30,9 @@ use crate::trace::{Trace, TraceCollector, TraceEventKind};
 pub struct EngineConfig {
     /// RNG seed. Same seed + same inputs = identical trace, always.
     pub seed: u64,
+    /// Maximum simulation cycles. `None` = run to completion.
+    /// When hit, the engine stops and the trace records `truncated: true`.
+    pub max_cycles: Option<u64>,
 }
 
 // ── Error ─────────────────────────────────────────────────────────────────────
@@ -113,6 +116,7 @@ pub struct Engine {
     current_cycle: u64,
     rng: StdRng,
     seed: u64,
+    max_cycles: Option<u64>,
 
     // Stalled T-gates: ready but waiting for a magic state
     stalled_gates: VecDeque<OpKey>,
@@ -252,6 +256,7 @@ impl Engine {
             current_cycle: 0,
             rng,
             seed: config.seed,
+            max_cycles: config.max_cycles,
             stalled_gates: VecDeque::new(),
             stall_start: HashMap::new(),
             hook_table,
@@ -264,11 +269,20 @@ impl Engine {
         })
     }
 
-    /// Run to completion, returning the sealed [`Trace`].
+    /// Run to completion or until `max_cycles` is reached, returning the sealed [`Trace`].
     ///
     /// Consumes the engine — an engine cannot be run twice.
+    /// If `max_cycles` is set and the limit is reached before all ops complete,
+    /// the returned trace has `truncated: true`.
     pub fn run(mut self) -> Trace {
         while !self.is_complete() {
+            if let Some(max) = self.max_cycles {
+                // DES jumps between event cycles — check the *next* event's cycle
+                // before processing it, not current_cycle (which lags by one step).
+                if self.event_queue.peek_cycle().is_some_and(|c| c >= max) {
+                    return self.trace.finish_truncated(self.seed, self.current_cycle);
+                }
+            }
             self.step();
         }
         self.trace.finish(self.seed, self.current_cycle)
@@ -709,7 +723,14 @@ mod tests {
         };
         let circuit = validated(single_clifford());
         assert!(matches!(
-            Engine::new(&circuit, &hw, EngineConfig { seed: 0 }),
+            Engine::new(
+                &circuit,
+                &hw,
+                EngineConfig {
+                    seed: 0,
+                    max_cycles: None
+                }
+            ),
             Err(EngineError::NoFactories)
         ));
     }
@@ -723,7 +744,14 @@ mod tests {
         };
         let circuit = validated(single_clifford());
         assert!(matches!(
-            Engine::new(&circuit, &hw, EngineConfig { seed: 0 }),
+            Engine::new(
+                &circuit,
+                &hw,
+                EngineConfig {
+                    seed: 0,
+                    max_cycles: None
+                }
+            ),
             Err(EngineError::ZeroBuffer)
         ));
     }
@@ -736,7 +764,10 @@ mod tests {
     fn smoke_single_clifford_cultivation() {
         let circuit = validated(single_clifford());
         let hw = cultivation_hw();
-        let config = EngineConfig { seed: 42 };
+        let config = EngineConfig {
+            seed: 42,
+            max_cycles: None,
+        };
 
         let engine = Engine::new(&circuit, &hw, config).expect("valid engine");
         let trace = engine.run();
@@ -758,7 +789,14 @@ mod tests {
         let hw = manhattan_hw();
         let circuit = validated(single_clifford()); // qubit_positions: None
         assert!(matches!(
-            Engine::new(&circuit, &hw, EngineConfig { seed: 0 }),
+            Engine::new(
+                &circuit,
+                &hw,
+                EngineConfig {
+                    seed: 0,
+                    max_cycles: None
+                }
+            ),
             Err(EngineError::MissingQubitPositions)
         ));
     }
@@ -767,7 +805,14 @@ mod tests {
     fn scalar_routing_does_not_require_positions() {
         let hw = cultivation_hw(); // scalar routing
         let circuit = validated(single_clifford()); // qubit_positions: None
-        let engine = Engine::new(&circuit, &hw, EngineConfig { seed: 42 });
+        let engine = Engine::new(
+            &circuit,
+            &hw,
+            EngineConfig {
+                seed: 42,
+                max_cycles: None,
+            },
+        );
         assert!(engine.is_ok());
     }
 }

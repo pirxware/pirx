@@ -1,74 +1,7 @@
-//! Post-hoc trace analysis — single O(n) pass over raw [`TraceEvent`]s.
-//!
-//! [`ProfileAnalyzer::analyze`] reads a [`Trace`] produced by the engine and
-//! returns a time-bucketed [`ExecutionProfile`]. No engine state is touched;
-//! the analyzer is a pure function of the trace.
+//! Post-hoc trace analyzer — single O(n) pass over raw [`TraceEvent`]s.
 
-use std::collections::HashMap;
-
-use serde::{Deserialize, Serialize};
-
+use super::profile::{BottleneckType, ExecutionProfile, StallRecord};
 use crate::trace::{Trace, TraceEventKind};
-
-// ── Output types ──────────────────────────────────────────────────────────────
-
-/// Per-bucket classification of the dominant execution bottleneck.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum BottleneckType {
-    /// No contention: magic state supply meets demand.
-    None,
-    /// T-gates are waiting for magic states (buffer empty with pending demand).
-    FactoryThroughput,
-    /// Operations are waiting for routing paths.
-    /// Placeholder — the scalar routing model produces no routing contention.
-    RoutingContention,
-    /// Both factory failures and gate stalls occurred in the same bucket.
-    Balanced,
-}
-
-/// A single stall record: one gate that waited for a magic state.
-///
-/// Sourced from [`TraceEventKind::GateServed`] events where `wait > 0`.
-/// The wait duration is computed by the engine; we consume it directly.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StallRecord {
-    /// Cycle at which the gate was finally served.
-    pub cycle: u64,
-    /// Operation identifier from the execution trace.
-    /// Original operations: matches `OpId` from the IR circuit.
-    /// Fixup nodes: synthetic ID with bit 63 set ([`SYNTHETIC_ID_FLAG`](crate::trace::SYNTHETIC_ID_FLAG)).
-    pub gate_id: u64,
-    /// Cycles the gate spent waiting for a magic state.
-    pub wait_cycles: u64,
-}
-
-/// Time-bucketed execution profile — the primary output of [`ProfileAnalyzer`].
-///
-/// All `Vec` fields are indexed by bucket `(cycle / resolution)`.
-/// Length is always `(total_cycles / resolution) + 1`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExecutionProfile {
-    /// Cycles per time bucket.
-    pub resolution: u64,
-    /// Total simulation cycles (from [`Trace::total_cycles`]).
-    pub total_cycles: u64,
-    /// Per-bucket fraction of factories in active production. Range: `[0.0, 1.0]`.
-    pub factory_utilization: Vec<f64>,
-    /// Per-bucket magic-state buffer occupancy (last value observed in bucket).
-    pub buffer_occupancy: Vec<u32>,
-    /// Per-bucket bottleneck classification.
-    pub bottleneck_type: Vec<BottleneckType>,
-    /// Individual stall records for all gates that waited for a magic state.
-    pub stall_events: Vec<StallRecord>,
-    /// Total count of [`TraceEventKind::InjectionError`] events.
-    pub injection_errors: u64,
-    /// Total count of [`TraceEventKind::FixupInserted`] events.
-    pub fixups_inserted: u64,
-    /// Sum of fixup durations: total cycles added to the circuit by injection errors.
-    pub critical_path_extension: u64,
-}
-
-// ── Analyzer ──────────────────────────────────────────────────────────────────
 
 /// Post-hoc trace analyzer. Stateless; every call to [`analyze`] is independent.
 ///
@@ -92,7 +25,9 @@ impl ProfileAnalyzer {
             .unwrap_or(usize::MAX / 2);
 
         // Pre-allocate all accumulation buffers.
-        let mut factory_active_counts = vec![0u32; num_buckets];
+        // Difference array: deltas[b] += 1 at interval start, deltas[b+1] -= 1 at
+        // interval end. Prefix-summed into active counts after the event loop.
+        let mut factory_active_deltas = vec![0i64; num_buckets.saturating_add(1)];
         let mut factory_failure_counts = vec![0u32; num_buckets];
         let mut buffer_occupancy = vec![0u32; num_buckets];
         let mut stalls_in_bucket = vec![0u32; num_buckets];
@@ -102,11 +37,11 @@ impl ProfileAnalyzer {
         let mut critical_path_extension: u64 = 0;
 
         // Per-factory start cycle for active-interval tracking.
-        // Capacity bounded by factory_count.
-        let mut factory_starts: HashMap<u16, u64> =
-            HashMap::with_capacity(usize::from(factory_count));
+        // Dense Vec indexed by factory_id — u16 keyspace, no hash overhead.
+        let mut factory_starts: Vec<Option<u64>> = vec![None; usize::from(factory_count)];
         // Per-fixup insert cycle for critical-path extension accounting.
-        let mut fixup_starts: HashMap<u64, u64> = HashMap::new();
+        let mut fixup_starts: std::collections::HashMap<u64, u64> =
+            std::collections::HashMap::new();
 
         let to_bucket = |cycle: u64| -> usize {
             usize::try_from(cycle / resolution)
@@ -119,30 +54,39 @@ impl ProfileAnalyzer {
             let b = to_bucket(event.cycle);
             match &event.kind {
                 TraceEventKind::FactoryStarted { factory_id } => {
-                    factory_starts.insert(*factory_id, event.cycle);
+                    if let Some(slot) = factory_starts.get_mut(usize::from(*factory_id)) {
+                        *slot = Some(event.cycle);
+                    }
                 }
 
                 TraceEventKind::FactoryProduced { factory_id } => {
-                    // Mark every bucket this factory's run spanned as active.
-                    // FactoryStarted for the next run is recorded immediately after
-                    // in the same cycle, so factory_starts is still the OLD start here.
-                    if let Some(&start) = factory_starts.get(factory_id) {
+                    if let Some(start) = factory_starts
+                        .get(usize::from(*factory_id))
+                        .copied()
+                        .flatten()
+                    {
                         let start_b = to_bucket(start);
-                        for fill_b in start_b..=b {
-                            if let Some(c) = factory_active_counts.get_mut(fill_b) {
-                                *c = c.saturating_add(1);
-                            }
+                        if let Some(d) = factory_active_deltas.get_mut(start_b) {
+                            *d += 1;
+                        }
+                        if let Some(d) = factory_active_deltas.get_mut(b + 1) {
+                            *d -= 1;
                         }
                     }
                 }
 
                 TraceEventKind::FactoryFailed { factory_id } => {
-                    if let Some(&start) = factory_starts.get(factory_id) {
+                    if let Some(start) = factory_starts
+                        .get(usize::from(*factory_id))
+                        .copied()
+                        .flatten()
+                    {
                         let start_b = to_bucket(start);
-                        for fill_b in start_b..=b {
-                            if let Some(c) = factory_active_counts.get_mut(fill_b) {
-                                *c = c.saturating_add(1);
-                            }
+                        if let Some(d) = factory_active_deltas.get_mut(start_b) {
+                            *d += 1;
+                        }
+                        if let Some(d) = factory_active_deltas.get_mut(b + 1) {
+                            *d -= 1;
                         }
                     }
                     if let Some(c) = factory_failure_counts.get_mut(b) {
@@ -152,7 +96,6 @@ impl ProfileAnalyzer {
 
                 TraceEventKind::BufferEnqueue { occupancy }
                 | TraceEventKind::BufferDequeue { occupancy } => {
-                    // Last observed occupancy in the bucket wins.
                     if let Some(occ) = buffer_occupancy.get_mut(b) {
                         *occ = *occupancy;
                     }
@@ -199,25 +142,30 @@ impl ProfileAnalyzer {
         }
 
         // Fill remaining partial factory runs up to total_cycles.
-        // The simulation ends when all gates complete, not when all factories finish.
-        // factory_starts now holds the START of each factory's most recent (still
-        // in-flight) production run — fill those intervals to the last bucket.
         let last_b = to_bucket(total_cycles);
-        for &start in factory_starts.values() {
+        for &start in factory_starts.iter().flatten() {
             let start_b = to_bucket(start);
-            for fill_b in start_b..=last_b {
-                if let Some(c) = factory_active_counts.get_mut(fill_b) {
-                    *c = c.saturating_add(1);
-                }
+            if let Some(d) = factory_active_deltas.get_mut(start_b) {
+                *d += 1;
+            }
+            if let Some(d) = factory_active_deltas.get_mut(last_b + 1) {
+                *d -= 1;
             }
         }
 
-        // Normalize active counts → utilization in [0.0, 1.0].
-        // factory_count.max(1) guards against the pathological zero-factory case.
+        // Prefix-sum the difference array into per-bucket active counts.
         let fcount = f64::from(factory_count.max(1));
-        let factory_utilization: Vec<f64> = factory_active_counts
+        let mut running: i64 = 0;
+        let factory_utilization: Vec<f64> = factory_active_deltas
+            .get(..num_buckets)
+            .unwrap_or_default()
             .iter()
-            .map(|&active| (f64::from(active) / fcount).min(1.0))
+            .map(|&delta| {
+                running += delta;
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let active = if running > 0 { running as u32 } else { 0 };
+                (f64::from(active) / fcount).min(1.0)
+            })
             .collect();
 
         // Classify bottleneck per bucket from stall counts and factory failure counts.
@@ -259,18 +207,8 @@ impl ProfileAnalyzer {
     clippy::indexing_slicing
 )]
 mod tests {
-    use pirx_hw::{
-        CodeType, RoutingConfig,
-        model::{
-            BufferConfig, FactoryConfig, HardwareModel, InjectionConfig, MetaConfig, QecConfig,
-            TimingConfig,
-        },
-    };
-    use pirx_ir::{
-        ValidatedCircuit,
-        circuit::{CircuitMetadata, Dependency, OpKind, Operation, ProfilerCircuit},
-    };
-    use smallvec::smallvec;
+    use pirx_hw::model::HardwareModel;
+    use pirx_testkit::{cultivation_hw, single_clifford, t_gate_chain, validated};
 
     use super::{BottleneckType, ProfileAnalyzer};
     use crate::{
@@ -278,84 +216,21 @@ mod tests {
         trace::TraceEventKind,
     };
 
-    fn validated(circuit: ProfilerCircuit) -> ValidatedCircuit {
-        pirx_ir::validate::validate(circuit).expect("test fixture must be valid")
-    }
-
-    // ── Fixtures ──────────────────────────────────────────────────────────────
-
-    /// Single cultivation factory, cold start (preload=0), injection errors enabled.
     fn cultivation_cold(factory_count: u32) -> HardwareModel {
-        HardwareModel {
-            meta: MetaConfig {
-                name: "test-cultivation-cold".into(),
-                description: String::new(),
-            },
-            qec: QecConfig {
-                code_type: CodeType::SurfaceCode,
-                code_distance: 7,
-                physical_error_rate: 1e-3,
-                error_correction_threshold: 0.01,
-                logical_error_prefactor: 0.038,
-            },
-            timing: TimingConfig {
-                cycle_time_us: 1.0,
-                measurement_time_us: 0.5,
-                classical_feedback_latency_us: 1.0,
-            },
-            factory: FactoryConfig::Cultivation {
-                count: factory_count,
-                lambda_raw: 0.002,
-                fault_distance: 3,
-            },
-            injection: InjectionConfig {
-                error_probability: 0.5,
-                fixup_cost_cycles: 1,
-            },
-            routing: RoutingConfig::default(),
-            buffer: BufferConfig {
-                capacity: 4,
-                preload: 0,
-            },
-        }
-    }
-
-    /// 5 T-gates in a strict linear chain: T0 → T1 → T2 → T3 → T4.
-    fn chain_5_t_gates() -> ProfilerCircuit {
-        let ops: Vec<Operation> = (0u64..5)
-            .map(|id| Operation {
-                id,
-                kind: OpKind::TGate,
-                qubits: smallvec![0],
-                initially_active: true,
-            })
-            .collect();
-        let deps: Vec<Dependency> = (0u64..4)
-            .map(|i| Dependency { from: i, to: i + 1 })
-            .collect();
-        ProfilerCircuit {
-            ops,
-            deps,
-            qubit_count: 1,
-            qubit_positions: None,
-            hooks: vec![],
-            metadata: CircuitMetadata {
-                name: "chain-5-t".into(),
-                source_framework: "test".into(),
-                t_count: 5,
-                clifford_count: 0,
-                rotation_count: 0,
-                depth: 5,
-            },
-        }
+        let mut hw = cultivation_hw();
+        hw.factory = pirx_hw::model::FactoryConfig::Cultivation {
+            count: factory_count,
+            lambda_raw: 0.002,
+            fault_distance: 3,
+        };
+        hw
     }
 
     // ── Tests ─────────────────────────────────────────────────────────────────
 
-    /// total_cycles in the profile must match trace.total_cycles exactly.
     #[test]
     fn total_cycles_matches_trace() {
-        let circuit = validated(chain_5_t_gates());
+        let circuit = validated(t_gate_chain(5));
         let hw = cultivation_cold(1);
         let trace = Engine::new(
             &circuit,
@@ -374,10 +249,9 @@ mod tests {
         assert_eq!(profile.total_cycles, expected);
     }
 
-    /// injection_errors must equal the number of InjectionError trace events.
     #[test]
     fn injection_errors_count_matches_trace() {
-        let circuit = validated(chain_5_t_gates());
+        let circuit = validated(t_gate_chain(5));
         let hw = cultivation_cold(1);
         let trace = Engine::new(
             &circuit,
@@ -400,10 +274,9 @@ mod tests {
         assert_eq!(profile.injection_errors, trace_count);
     }
 
-    /// Every factory_utilization value must be in [0.0, 1.0].
     #[test]
     fn factory_utilization_in_range() {
-        let circuit = validated(chain_5_t_gates());
+        let circuit = validated(t_gate_chain(5));
         let hw = cultivation_cold(2);
         let trace = Engine::new(
             &circuit,
@@ -430,12 +303,9 @@ mod tests {
         }
     }
 
-    /// With a cold-start buffer (preload=0) and a cultivation factory, the first
-    /// T-gate in the chain cannot be served until the factory completes at least
-    /// one production cycle. stall_events must therefore be non-empty.
     #[test]
     fn stall_events_nonempty_on_cold_start() {
-        let circuit = validated(chain_5_t_gates());
+        let circuit = validated(t_gate_chain(5));
         let hw = cultivation_cold(1);
         let trace = Engine::new(
             &circuit,
@@ -448,7 +318,6 @@ mod tests {
         .unwrap()
         .run();
 
-        // Confirm the trace itself has stalled-then-served events.
         assert!(
             trace
                 .events
@@ -464,10 +333,9 @@ mod tests {
         );
     }
 
-    /// bottleneck_type length must equal factory_utilization length (num_buckets).
     #[test]
     fn profile_vector_lengths_consistent() {
-        let circuit = validated(chain_5_t_gates());
+        let circuit = validated(t_gate_chain(5));
         let hw = cultivation_cold(1);
         let trace = Engine::new(
             &circuit,
@@ -490,14 +358,12 @@ mod tests {
         assert_eq!(profile.bottleneck_type.len(), expected_buckets);
     }
 
-    /// A simulation with no injection errors must report zero injection_errors
-    /// and zero fixups_inserted.
     #[test]
     fn no_injection_errors_when_probability_zero() {
-        let circuit = validated(chain_5_t_gates());
+        let circuit = validated(t_gate_chain(5));
         let mut hw = cultivation_cold(1);
         hw.injection.error_probability = 0.0;
-        hw.buffer.preload = 4; // warm start so T-gates don't stall
+        hw.buffer.preload = 4;
         let trace = Engine::new(
             &circuit,
             &hw,
@@ -515,30 +381,9 @@ mod tests {
         assert_eq!(profile.critical_path_extension, 0);
     }
 
-    /// A pure-Clifford circuit never needs magic states, so no stalls occur and
-    /// bottleneck_type must be None in every bucket.
     #[test]
     fn bottleneck_none_when_no_stalls() {
-        let clifford = validated(ProfilerCircuit {
-            ops: vec![Operation {
-                id: 0,
-                kind: OpKind::Clifford,
-                qubits: smallvec![0],
-                initially_active: true,
-            }],
-            deps: vec![],
-            qubit_count: 1,
-            qubit_positions: None,
-            hooks: vec![],
-            metadata: CircuitMetadata {
-                name: "clifford".into(),
-                source_framework: "test".into(),
-                t_count: 0,
-                clifford_count: 1,
-                rotation_count: 0,
-                depth: 1,
-            },
-        });
+        let clifford = validated(single_clifford());
         let hw = cultivation_cold(1);
         let trace = Engine::new(
             &clifford,
@@ -557,6 +402,69 @@ mod tests {
                 bt,
                 BottleneckType::None,
                 "bucket {i}: expected None, got {bt:?} (no stalls expected with warm start)"
+            );
+        }
+    }
+
+    #[test]
+    fn difference_array_matches_naive_reference() {
+        let circuit = validated(t_gate_chain(5));
+        let hw = cultivation_cold(2);
+        let trace = Engine::new(
+            &circuit,
+            &hw,
+            EngineConfig {
+                seed: 42,
+                max_cycles: None,
+            },
+        )
+        .unwrap()
+        .run();
+
+        let resolution = 1u64;
+        let factory_count = 2u16;
+        let profile = ProfileAnalyzer::analyze(&trace, factory_count, resolution);
+
+        let num_buckets = usize::try_from(trace.total_cycles / resolution + 1).unwrap();
+        let mut naive_active = vec![0u32; num_buckets];
+        let mut starts = std::collections::HashMap::<u16, u64>::new();
+
+        let to_b = |c: u64| usize::try_from(c / resolution).unwrap();
+
+        for event in &trace.events {
+            let b = to_b(event.cycle);
+            match &event.kind {
+                TraceEventKind::FactoryStarted { factory_id } => {
+                    starts.insert(*factory_id, event.cycle);
+                }
+                TraceEventKind::FactoryProduced { factory_id }
+                | TraceEventKind::FactoryFailed { factory_id } => {
+                    if let Some(&s) = starts.get(factory_id) {
+                        for slot in naive_active.iter_mut().take(b + 1).skip(to_b(s)) {
+                            *slot += 1;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        let last_b = to_b(trace.total_cycles);
+        for &s in starts.values() {
+            for slot in naive_active.iter_mut().take(last_b + 1).skip(to_b(s)) {
+                *slot += 1;
+            }
+        }
+
+        let fcount = f64::from(factory_count.max(1));
+        for (i, (&naive, &optimized)) in naive_active
+            .iter()
+            .zip(profile.factory_utilization.iter())
+            .enumerate()
+        {
+            let expected = (f64::from(naive) / fcount).min(1.0);
+            assert!(
+                (expected - optimized).abs() < f64::EPSILON,
+                "bucket {i}: naive={expected}, optimized={optimized}"
             );
         }
     }

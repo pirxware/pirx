@@ -16,14 +16,14 @@ tket-json = ["dep:tket-json-rs", "dep:serde_json"]
 pirx-ir = { workspace = true }
 thiserror = { workspace = true }
 smallvec = { workspace = true }
-oq3_semantics = "0.7.0"
-oq3_source_file = "0.7.0"
-tket-json-rs = { version = "0.8.3", optional = true }
+oq3_semantics = { workspace = true }
+oq3_source_file = { workspace = true }
+tket-json-rs = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-tket-json-rs = "0.8.3"
+tket-json-rs = { workspace = true }
 serde_json = { workspace = true }
 
 [lints]

@@ -3,21 +3,26 @@
 use std::{collections::HashMap, path::Path};
 
 use pirx_ir::{
-    circuit::{CircuitMetadata, Dependency, OpId, OpKind, Operation, ProfilerCircuit, QubitId},
+    circuit::{
+        CircuitMetadata, Dependency, OpId, OpKind, Operation, ProfilerCircuit, QubitId,
+        classify_rz_angle,
+    },
     validate::ValidatedCircuit,
 };
 use smallvec::SmallVec;
-use tket_json_rs::{SerialCircuit, optype::OpType};
+use tket_json_rs::{SerialCircuit, optype::OpType, register::ElementId};
 
 use crate::error::TketJsonError;
 
 /// Parse a tket1 JSON file and return a validated profiler circuit.
+#[must_use = "parsing a circuit without using the result is always a bug"]
 pub fn from_tket_json_file(path: &Path) -> Result<ValidatedCircuit, TketJsonError> {
     let content = std::fs::read_to_string(path)?;
     from_tket_json_str(&content)
 }
 
 /// Parse a tket1 JSON string and return a validated profiler circuit.
+#[must_use = "parsing a circuit without using the result is always a bug"]
 pub fn from_tket_json_str(json: &str) -> Result<ValidatedCircuit, TketJsonError> {
     let serial: SerialCircuit =
         serde_json::from_str(json).map_err(|e| TketJsonError::Parse(e.to_string()))?;
@@ -27,7 +32,7 @@ pub fn from_tket_json_str(json: &str) -> Result<ValidatedCircuit, TketJsonError>
 // ── Circuit builder ────────────────────────────────────────────────────────
 
 struct CircuitBuilder {
-    qubit_map: HashMap<String, QubitId>,
+    qubit_map: HashMap<ElementId, QubitId>,
     qubit_count: u32,
     ops: Vec<Operation>,
     deps: Vec<Dependency>,
@@ -36,7 +41,6 @@ struct CircuitBuilder {
     t_count: u64,
     clifford_count: u64,
     rotation_count: u64,
-    measurement_count: u64,
     depth_at_qubit: Vec<u64>,
 }
 
@@ -52,7 +56,7 @@ impl CircuitBuilder {
         for (idx, qubit) in serial.qubits.iter().enumerate() {
             // idx < serial.qubits.len() which fits in u32 (checked above)
             #[allow(clippy::cast_possible_truncation)]
-            qubit_map.insert(qubit.to_string(), idx as QubitId);
+            qubit_map.insert(qubit.id.clone(), idx as QubitId);
         }
 
         Ok(Self {
@@ -65,7 +69,6 @@ impl CircuitBuilder {
             t_count: 0,
             clifford_count: 0,
             rotation_count: 0,
-            measurement_count: 0,
             depth_at_qubit: vec![0; qubit_count as usize],
         })
     }
@@ -86,22 +89,18 @@ impl CircuitBuilder {
                 continue;
             }
 
-            let op_type_name = op_type.to_string();
-            let kind = classify_op(op_type, &cmd.op.params, &op_type_name)?;
+            let kind = classify_op(op_type, &cmd.op.params)?;
 
             self.emit_operation(kind, &qubit_ids);
         }
         Ok(())
     }
 
-    fn resolve_qubit_args(
-        &self,
-        args: &[tket_json_rs::register::ElementId],
-    ) -> SmallVec<[QubitId; 2]> {
+    fn resolve_qubit_args(&self, args: &[ElementId]) -> SmallVec<[QubitId; 2]> {
         let mut qubit_ids = SmallVec::new();
         for arg in args {
-            if let Some(&qid) = self.qubit_map.get(&arg.to_string()) {
-                qubit_ids.push(qid);
+            if let Some(&qubit_id) = self.qubit_map.get(arg) {
+                qubit_ids.push(qubit_id);
             }
         }
         qubit_ids
@@ -145,7 +144,7 @@ impl CircuitBuilder {
             OpKind::TGate => self.t_count += 1,
             OpKind::Clifford => self.clifford_count += 1,
             OpKind::Rotation { .. } => self.rotation_count += 1,
-            OpKind::Measurement { .. } => self.measurement_count += 1,
+            OpKind::Measurement { .. } => {}
         }
 
         self.ops.push(op);
@@ -260,16 +259,13 @@ fn is_classical(op_type: OpType) -> bool {
     )
 }
 
-fn classify_op(
-    op_type: OpType,
-    params: &Option<Vec<String>>,
-    op_type_name: &str,
-) -> Result<OpKind, TketJsonError> {
+fn classify_op(op_type: OpType, params: &Option<Vec<String>>) -> Result<OpKind, TketJsonError> {
     match op_type {
         OpType::T | OpType::Tdg => Ok(OpKind::TGate),
         OpType::Measure | OpType::Collapse => Ok(OpKind::Measurement { hook: None }),
         OpType::Rz | OpType::U1 | OpType::Phase => {
-            let angle_halfturns = parse_first_param(params, op_type_name)?;
+            let op_type_name = op_type.to_string();
+            let angle_halfturns = parse_first_param(params, &op_type_name)?;
             let angle_radians = angle_halfturns * std::f64::consts::PI;
             Ok(classify_rz_angle(angle_radians))
         }
@@ -297,24 +293,9 @@ fn parse_first_param(
         .parse::<f64>()
         .map_err(|_| TketJsonError::SymbolicParameter {
             gate: op_type_name.into(),
+            // clone: need owned String for error variant; param_str borrows from SerialCircuit
             param: param_str.clone(),
         })
-}
-
-fn classify_rz_angle(angle: f64) -> OpKind {
-    let k = angle / std::f64::consts::FRAC_PI_4;
-    let k_rounded = k.round();
-    if (k - k_rounded).abs() < 1e-10 {
-        #[allow(clippy::cast_possible_truncation)]
-        let k_int = k_rounded as i64;
-        if k_int % 2 != 0 {
-            OpKind::TGate
-        } else {
-            OpKind::Clifford
-        }
-    } else {
-        OpKind::Rotation { angle }
-    }
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────

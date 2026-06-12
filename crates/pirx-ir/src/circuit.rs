@@ -94,6 +94,28 @@ pub enum OpKind {
     Rotation { angle: f64 },
 }
 
+/// Classify an Rz rotation angle into the appropriate [`OpKind`].
+///
+/// - Odd multiples of π/4 → [`OpKind::TGate`]
+/// - Even multiples of π/4 → [`OpKind::Clifford`]
+/// - Everything else → [`OpKind::Rotation`]
+#[must_use]
+pub fn classify_rz_angle(angle: f64) -> OpKind {
+    let k = angle / std::f64::consts::FRAC_PI_4;
+    let k_rounded = k.round();
+    if (k - k_rounded).abs() < 1e-10 {
+        #[allow(clippy::cast_possible_truncation)]
+        let k_int = k_rounded as i64;
+        if k_int % 2 != 0 {
+            OpKind::TGate
+        } else {
+            OpKind::Clifford
+        }
+    } else {
+        OpKind::Rotation { angle }
+    }
+}
+
 /// Data dependency: `from` must complete before `to` can start.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Dependency {

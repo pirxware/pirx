@@ -19,6 +19,7 @@ pub enum OpenQasmError {
 }
 
 /// Errors produced by the tket JSON adapter.
+#[cfg(feature = "tket-json")]
 #[derive(Debug, thiserror::Error)]
 pub enum TketJsonError {
     #[error("tket JSON parse error: {0}")]

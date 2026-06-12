@@ -10,12 +10,15 @@ use oq3_semantics::{
         self, ArithOp, BinaryOp, Expr, GateModifier, GateOperand, IndexOperator, Literal, Stmt,
         TExpr, UnaryOp,
     },
-    symbols::{SymbolId, SymbolTable, SymbolType},
+    symbols::{SymbolId, SymbolTable, SymbolType as _},
     syntax_to_semantics::parse_source_string,
     types::{ArrayDims, Type},
 };
 use pirx_ir::{
-    circuit::{CircuitMetadata, Dependency, OpId, OpKind, Operation, ProfilerCircuit, QubitId},
+    circuit::{
+        CircuitMetadata, Dependency, OpId, OpKind, Operation, ProfilerCircuit, QubitId,
+        classify_rz_angle,
+    },
     validate::ValidatedCircuit,
 };
 use smallvec::SmallVec;
@@ -26,6 +29,7 @@ use crate::error::OpenQasmError;
 ///
 /// Uses the file's parent directory as include search path so that
 /// `include "stdgates.inc"` and similar directives resolve correctly.
+#[must_use = "parsing a circuit without using the result is always a bug"]
 pub fn from_qasm_file(path: &Path) -> Result<ValidatedCircuit, OpenQasmError> {
     let source = std::fs::read_to_string(path)?;
     let search_paths: Vec<&Path> = path.parent().into_iter().collect();
@@ -33,6 +37,7 @@ pub fn from_qasm_file(path: &Path) -> Result<ValidatedCircuit, OpenQasmError> {
 }
 
 /// Parse an OpenQASM source string and return a validated profiler circuit.
+#[must_use = "parsing a circuit without using the result is always a bug"]
 pub fn from_qasm_str(source: &str) -> Result<ValidatedCircuit, OpenQasmError> {
     from_qasm_str_inner(source, None::<&[&Path]>)
 }
@@ -149,6 +154,8 @@ impl<'a> CircuitBuilder<'a> {
         Ok(())
     }
 
+    /// Gates inside conditional blocks are included unconditionally —
+    /// pirx profiles the maximum execution path.
     fn walk_stmt(&mut self, stmt: &Stmt) -> Result<(), OpenQasmError> {
         match stmt {
             Stmt::DeclareQuantum(dq) => self.declare_qubit(dq),
@@ -165,6 +172,7 @@ impl<'a> CircuitBuilder<'a> {
             Stmt::If(if_stmt) => self.walk_block(if_stmt.then_branch()),
             Stmt::While(w) => self.walk_block(w.loop_body()),
             Stmt::Block(b) => self.walk_block(b),
+            // Unrecognized QASM 3 statements are ignored — pirx extracts gates only.
             _ => Ok(()),
         }
     }
@@ -182,6 +190,8 @@ impl<'a> CircuitBuilder<'a> {
             .as_ref()
             .map_err(|_| OpenQasmError::Parse("unresolved qubit declaration".into()))?
             .clone();
+        // oq3_semantics SymbolTable only exposes Index (no .get()) — IDs are valid by parser construction
+        #[allow(clippy::indexing_slicing)]
         let typ = &self.symbol_table[&sym_id];
         let count: u32 = match typ.symbol_type() {
             Type::Qubit => 1,
@@ -276,6 +286,7 @@ impl<'a> CircuitBuilder<'a> {
             .name()
             .as_ref()
             .map_err(|_| OpenQasmError::Parse("unresolved gate name".into()))?;
+        #[allow(clippy::indexing_slicing)]
         Ok(self.symbol_table[sym_id].name().to_string())
     }
 
@@ -389,22 +400,6 @@ fn classify_gate(name: &str, params: &[f64], has_inv: bool) -> OpKind {
     }
 }
 
-fn classify_rz_angle(angle: f64) -> OpKind {
-    let k = angle / std::f64::consts::FRAC_PI_4;
-    let k_rounded = k.round();
-    if (k - k_rounded).abs() < 1e-10 {
-        #[allow(clippy::cast_possible_truncation)]
-        let k_int = k_rounded as i64;
-        if k_int % 2 != 0 {
-            OpKind::TGate
-        } else {
-            OpKind::Clifford
-        }
-    } else {
-        OpKind::Rotation { angle }
-    }
-}
-
 // ── Expression evaluation ───────────────────────────────────────────────────
 
 fn eval_expr(
@@ -428,6 +423,7 @@ fn eval_expr(
                     gate: gate_name.into(),
                     name: "<unresolved>".into(),
                 })?;
+            #[allow(clippy::indexing_slicing)]
             let symbol = &symbol_table[sym_id];
             match symbol.name() {
                 "pi" | "π" => Ok(std::f64::consts::PI),
@@ -689,13 +685,12 @@ measure q[1] -> c[1];
 ";
         let qasm_path = tmp.path().join("test.qasm");
         std::fs::write(&qasm_path, src).unwrap();
+        // oq3_semantics 0.7 does not support QASM 2.0 qreg/creg/measure->
         let result = from_qasm_file(&qasm_path);
-        // oq3_semantics may not fully support QASM 2.0 syntax
-        // (qreg/creg, measure -> arrow). If it parses, verify counts.
-        if let Ok(c) = result {
-            assert_eq!(c.qubit_count, 2);
-            assert_eq!(c.metadata.t_count, 2);
-        }
+        assert!(
+            result.is_err(),
+            "expected QASM 2.0 syntax to be rejected by oq3_semantics"
+        );
     }
 
     // ── Fixture file ────────────────────────────────────────────────────
@@ -706,10 +701,9 @@ measure q[1] -> c[1];
             .join("tests")
             .join("fixtures")
             .join("small_circuit.qasm");
-        if fixture.exists() {
-            let circuit = from_qasm_file(&fixture).unwrap();
-            assert!(!circuit.ops.is_empty());
-            assert!(circuit.qubit_count > 0);
-        }
+        assert!(fixture.exists(), "fixture not found: {}", fixture.display());
+        let circuit = from_qasm_file(&fixture).unwrap();
+        assert!(!circuit.ops.is_empty());
+        assert!(circuit.qubit_count > 0);
     }
 }

@@ -219,10 +219,10 @@ impl Engine {
             ready_set.push(key);
         }
 
-        // Capacity hint: ~5 events per gate + 3 per factory production round.
+        // Capacity hint: ~5 events per gate + ~10 per factory (scales with simulated time).
         let capacity_hint = n_ops
             .saturating_mul(5)
-            .saturating_add(factory_count.saturating_mul(3));
+            .saturating_add(factory_count.saturating_mul(10));
         let mut trace = TraceCollector::new(capacity_hint);
 
         // Build hook dispatch table: flat Vec indexed by hook_id * 2 + outcome.

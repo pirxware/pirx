@@ -109,10 +109,9 @@ pub struct Trace {
     pub truncated: bool,
 }
 
-/// Append-only event accumulator used inside the simulation hot loop.
-///
-/// Pre-allocated at construction. `record` is the only write path — no
-/// branching, no allocation after `new`. Sealed into a `Trace` via `finish`.
+/// Append-only event accumulator. Pre-allocated with a best-effort hint.
+/// Growth beyond the hint is amortized O(1) per event — acceptable for
+/// the trace collector, which is not on the simulation critical path.
 pub struct TraceCollector {
     events: Vec<TraceEvent>,
 }

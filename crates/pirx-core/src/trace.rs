@@ -1,9 +1,11 @@
 //! Trace event types — collected during simulation, analyzed after.
 //!
-//! 24 bytes per event (cycle: 8 + kind: 16). Append-only during
+//! 32 bytes per event (cycle: 8 + kind: 24). Append-only during
 //! simulation, immutable after. Analyzed by the profile analyzer.
 
 use serde::{Deserialize, Serialize};
+
+const _: () = assert!(std::mem::size_of::<TraceEvent>() == 32);
 
 /// Bit flag for synthetic (fixup) operation IDs in trace events.
 ///

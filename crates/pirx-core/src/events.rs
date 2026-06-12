@@ -6,7 +6,7 @@
 
 use std::{cmp::Reverse, collections::BinaryHeap};
 
-pub use crate::dag::OpKey;
+use crate::dag::OpKey;
 
 /// An engine event — a deferred state transition completing in a future cycle.
 ///

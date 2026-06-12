@@ -393,8 +393,8 @@ impl Engine {
             }
             EngineEvent::GateCompleted { gate } => {
                 let gate_id = self.trace_id(gate);
-                // Distinguish fixup completions from regular gate completions.
-                if self.dag.get(gate).map(|op| op.kind) == Some(OpKind::Fixup) {
+                let kind = self.dag.get(gate).map(|op| op.kind);
+                if kind == Some(OpKind::Fixup) {
                     self.trace.record(
                         event.cycle,
                         TraceEventKind::FixupCompleted { fixup: gate_id },
@@ -407,7 +407,7 @@ impl Engine {
                 if !self.hook_table.is_empty() {
                     self.completed_set.insert(gate, ());
                 }
-                self.complete_gate(gate);
+                self.complete_gate(gate, kind);
             }
         }
     }
@@ -418,8 +418,8 @@ impl Engine {
     /// inserts a fixup node (already in the ready queue) and increments
     /// `total_ops`. For measurements with hooks, samples the outcome and
     /// activates conditional ops. Otherwise, releases successors.
-    fn complete_gate(&mut self, gate: OpKey) {
-        let Some(kind) = self.dag.get(gate).map(|op| op.kind) else {
+    fn complete_gate(&mut self, gate: OpKey, kind: Option<OpKind>) {
+        let Some(kind) = kind else {
             return;
         };
 

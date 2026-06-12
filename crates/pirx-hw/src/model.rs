@@ -1,85 +1,14 @@
 //! Hardware model types, deserialized from TOML.
 
 use serde::Deserialize;
-use thiserror::Error;
 
-// ── Errors ───────────────────────────────────────────────────────────────────
-
-/// Errors from hardware model loading or validation.
-#[derive(Debug, Error)]
-pub enum HardwareModelError {
-    #[error("TOML parsing failed: {0}")]
-    Parse(#[from] toml::de::Error),
-
-    #[error("code distance must be odd and >= 3, got {0}")]
-    InvalidCodeDistance(u32),
-
-    #[error("physical error rate must be in (0, 1), got {0}")]
-    InvalidPhysicalErrorRate(f64),
-
-    #[error("error correction threshold must be in (0, 1), got {0}")]
-    InvalidErrorCorrectionThreshold(f64),
-
-    #[error("logical error prefactor must be > 0, got {0}")]
-    InvalidLogicalErrorPrefactor(f64),
-
-    #[error("cycle time must be > 0, got {0} µs")]
-    InvalidCycleTime(f64),
-
-    #[error("measurement time must be > 0, got {0} µs")]
-    InvalidMeasurementTime(f64),
-
-    #[error("classical feedback latency must be >= 0, got {0} µs")]
-    InvalidFeedbackLatency(f64),
-
-    #[error("factory count must be > 0")]
-    ZeroFactories,
-
-    #[error("buffer capacity must be > 0")]
-    ZeroBufferCapacity,
-
-    #[error("lambda_raw must be > 0 for cultivation factory, got {0}")]
-    InvalidLambdaRaw(f64),
-
-    #[error("abort probability must be in [0, 1], got {0}")]
-    InvalidAbortProbability(f64),
-
-    #[error("injection error probability must be in [0, 1], got {0}")]
-    InvalidInjectionProbability(f64),
-
-    #[error("routing overhead fraction must be in [0, 1], got {0}")]
-    InvalidOverheadFraction(f64),
-
-    #[error("factory count {0} exceeds u16::MAX (65535)")]
-    FactoryCountExceedsLimit(u32),
-
-    #[error("buffer preload {preload} exceeds capacity {capacity}")]
-    PreloadExceedsCapacity { preload: u32, capacity: u32 },
-}
-
-// ── Enums ────────────────────────────────────────────────────────────────────
-
-/// Quantum error-correcting code family.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-pub enum CodeType {
-    #[serde(rename = "surface_code")]
-    SurfaceCode,
-    #[serde(rename = "color_code")]
-    ColorCode,
-    #[serde(rename = "qldpc")]
-    Qldpc,
-}
-
-/// Magic state distillation protocol.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-pub enum DistillationProtocol {
-    #[serde(rename = "15-to-1")]
-    FifteenToOne,
-    #[serde(rename = "CCZ-to-2T")]
-    CczToTwoT,
-}
-
-// ── Model types ──────────────────────────────────────────────────────────────
+// Re-export all config and error types for backward compatibility.
+// External code imports `pirx_hw::model::BufferConfig` etc.
+pub use crate::config::{
+    BufferConfig, CodeType, DistillationProtocol, FactoryConfig, InjectionConfig, MetaConfig,
+    QecConfig, RoutingConfig, TimingConfig,
+};
+pub use crate::error::HardwareModelError;
 
 /// Complete hardware model specification.
 #[derive(Debug, Clone, Deserialize)]
@@ -192,156 +121,6 @@ impl HardwareModel {
     }
 }
 
-/// Model metadata.
-#[derive(Debug, Clone, Deserialize)]
-pub struct MetaConfig {
-    pub name: String,
-    #[serde(default)]
-    pub description: String,
-}
-
-/// Quantum error correction parameters.
-#[derive(Debug, Clone, Deserialize)]
-pub struct QecConfig {
-    pub code_type: CodeType,
-    pub code_distance: u32,
-    pub physical_error_rate: f64,
-    /// Error correction threshold (p_th). Defaults to 0.01 for surface code.
-    #[serde(default = "default_error_correction_threshold")]
-    pub error_correction_threshold: f64,
-    /// Logical error prefactor: p_L = prefactor × (p / p_th)^((d+1)/2).
-    #[serde(default = "default_logical_error_prefactor")]
-    pub logical_error_prefactor: f64,
-}
-
-fn default_error_correction_threshold() -> f64 {
-    0.01
-}
-
-fn default_logical_error_prefactor() -> f64 {
-    0.038
-}
-
-/// Timing parameters.
-#[derive(Debug, Clone, Deserialize)]
-pub struct TimingConfig {
-    /// One QEC round in microseconds.
-    pub cycle_time_us: f64,
-    /// Measurement duration in microseconds.
-    #[serde(default = "default_measurement_time")]
-    pub measurement_time_us: f64,
-    /// Decoder + classical processing latency in microseconds.
-    #[serde(default = "default_feedback_latency")]
-    pub classical_feedback_latency_us: f64,
-}
-
-fn default_measurement_time() -> f64 {
-    0.5
-}
-
-fn default_feedback_latency() -> f64 {
-    1.0
-}
-
-/// Factory configuration — tagged enum by `type` field.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "type")]
-pub enum FactoryConfig {
-    #[serde(rename = "distillation")]
-    Distillation {
-        count: u32,
-        protocol: DistillationProtocol,
-        cycles_per_round: u32,
-        rounds: u32,
-        abort_probability: f64,
-    },
-    #[serde(rename = "cultivation")]
-    Cultivation {
-        count: u32,
-        lambda_raw: f64,
-        fault_distance: u32,
-    },
-    #[serde(rename = "rz_synthesis")]
-    RzSynthesis {
-        count: u32,
-        distinct_angles: u32,
-        mean_cycles_per_state: f64,
-    },
-}
-
-impl FactoryConfig {
-    /// Number of factory instances.
-    pub fn count(&self) -> u32 {
-        match self {
-            Self::Distillation { count, .. }
-            | Self::Cultivation { count, .. }
-            | Self::RzSynthesis { count, .. } => *count,
-        }
-    }
-}
-
-/// Injection error parameters.
-#[derive(Debug, Clone, Deserialize)]
-pub struct InjectionConfig {
-    #[serde(default = "default_injection_probability")]
-    pub error_probability: f64,
-    #[serde(default = "default_fixup_cost")]
-    pub fixup_cost_cycles: u32,
-}
-
-fn default_injection_probability() -> f64 {
-    0.5
-}
-fn default_fixup_cost() -> u32 {
-    1
-}
-
-/// Routing model — tagged enum by `model` field.
-///
-/// Mirrors [`RoutingConfig`]: closed set, exhaustive matching, serde-driven.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "model")]
-pub enum RoutingConfig {
-    /// Fixed overhead per multi-qubit gate. Ignores topology.
-    #[serde(rename = "scalar")]
-    Scalar {
-        #[serde(default = "default_overhead_fraction")]
-        overhead_fraction: f64,
-    },
-    /// Manhattan distance on a logical qubit grid.
-    #[serde(rename = "manhattan")]
-    Manhattan {
-        grid_width: u32,
-        grid_height: u32,
-        #[serde(default = "default_cycles_per_hop")]
-        cycles_per_hop: u32,
-    },
-}
-
-fn default_overhead_fraction() -> f64 {
-    0.5
-}
-
-fn default_cycles_per_hop() -> u32 {
-    1
-}
-
-impl Default for RoutingConfig {
-    fn default() -> Self {
-        Self::Scalar {
-            overhead_fraction: 0.5,
-        }
-    }
-}
-
-/// Magic state buffer parameters.
-#[derive(Debug, Clone, Deserialize)]
-pub struct BufferConfig {
-    pub capacity: u32,
-    #[serde(default)]
-    pub preload: u32,
-}
-
 /// Load and validate a hardware model from a TOML string.
 ///
 /// # Errors
@@ -445,7 +224,6 @@ capacity = 4
 
     // ── Validation tests ─────────────────────────────────────────────────────
 
-    /// Helper: valid TOML that passes all checks. Tests below mutate one field.
     fn valid_toml(factory_section: &str) -> String {
         format!(
             r#"

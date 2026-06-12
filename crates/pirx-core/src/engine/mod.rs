@@ -5,95 +5,28 @@
 //! All stochastic decisions flow through an explicit `ChaCha12Rng` seeded from
 //! [`EngineConfig::seed`], ensuring full reproducibility (same seed → same trace).
 
+mod config;
+mod dispatch;
+
 use std::collections::VecDeque;
 
+pub use config::{EngineConfig, EngineError};
+use dispatch::hook_table_index;
 use pirx_hw::{RoutingConfig, model::HardwareModel};
-use pirx_ir::{
-    ValidatedCircuit,
-    circuit::{MeasurementHookId, MeasurementOutcome, OpId},
-};
-use rand::{Rng as _, SeedableRng};
+use pirx_ir::ValidatedCircuit;
+use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
 use slotmap::SecondaryMap;
 use smallvec::SmallVec;
-use thiserror::Error;
 
 use crate::{
     buffer::MagicStateBuffer,
-    dag::{Dag, DagBuild, DagError, FifoReadyQueue, OpKey, OpKind, ReadyQueue},
-    events::{EngineEvent, EventQueue, TimedEvent},
-    factory::{FactoryError, FactoryModel, FactoryOutcome, create_factories},
+    dag::{Dag, DagBuild, FifoReadyQueue, OpKey, ReadyQueue},
+    events::{EngineEvent, EventQueue},
+    factory::{FactoryModel, FactoryOutcome, create_factories},
     routing,
-    trace::{SYNTHETIC_ID_FLAG, Trace, TraceCollector, TraceEventKind},
+    trace::{Trace, TraceCollector, TraceEventKind},
 };
-
-// ── Config ────────────────────────────────────────────────────────────────────
-
-/// Configuration for [`Engine`] construction.
-#[derive(Debug, Clone, Copy)]
-pub struct EngineConfig {
-    /// RNG seed. Same seed + same inputs = identical trace, always.
-    pub seed: u64,
-    /// Maximum simulation cycles. `None` = run to completion.
-    /// When hit, the engine stops and the trace records `truncated: true`.
-    pub max_cycles: Option<u64>,
-}
-
-// ── Error ─────────────────────────────────────────────────────────────────────
-
-/// Errors that can occur during engine construction.
-///
-/// All validation happens inside [`Engine::new`]. If `new` returns `Ok`,
-/// the simulation is guaranteed to run to completion without error.
-#[derive(Debug, Error)]
-pub enum EngineError {
-    #[error("too many distinct rotation angles: {0} (maximum 65535)")]
-    TooManyRotationAngles(usize),
-
-    #[error("hardware model has zero factories")]
-    NoFactories,
-
-    #[error("buffer capacity is zero")]
-    ZeroBuffer,
-
-    #[error("factory creation failed: {0}")]
-    FactoryCreation(#[from] FactoryError),
-
-    #[error("manhattan routing requires qubit_positions in circuit")]
-    MissingQubitPositions,
-
-    #[error("measurement hook {hook_id} references non-existent op {op_id}")]
-    DanglingHookTarget {
-        hook_id: MeasurementHookId,
-        op_id: OpId,
-    },
-
-    #[error("internal DAG error: {0}")]
-    Internal(String),
-}
-
-impl From<DagError> for EngineError {
-    fn from(err: DagError) -> Self {
-        match err {
-            DagError::TooManyDistinctAngles(n) => Self::TooManyRotationAngles(n),
-            DagError::Internal(msg) => Self::Internal(msg),
-        }
-    }
-}
-
-// ── Hook dispatch ────────────────────────────────────────────────────────────
-
-/// Index into [`Engine::hook_table`] for a (hook_id, outcome) pair.
-/// Layout: `hook_id * 2 + outcome_ordinal`. Zero and One map to 0 and 1.
-fn hook_table_index(hook_id: MeasurementHookId, outcome: MeasurementOutcome) -> usize {
-    let ordinal = match outcome {
-        MeasurementOutcome::Zero => 0,
-        MeasurementOutcome::One => 1,
-    };
-    (hook_id as usize).saturating_mul(2).saturating_add(ordinal)
-}
-
-// ── Engine ────────────────────────────────────────────────────────────────────
 
 /// Discrete-event simulation engine.
 ///
@@ -105,45 +38,42 @@ fn hook_table_index(hook_id: MeasurementHookId, outcome: MeasurementOutcome) -> 
 /// [`Engine::run`] is guaranteed to terminate.
 pub struct Engine {
     // Circuit state
-    dag: Dag,
-    ready_set: Box<dyn ReadyQueue>,
+    pub(crate) dag: Dag,
+    pub(crate) ready_set: Box<dyn ReadyQueue>,
 
     // Hardware state
-    injection_error_probability: f64,
-    factories: Vec<Box<dyn FactoryModel>>,
-    buffer: MagicStateBuffer,
-    routing: Box<dyn routing::RoutingModel>,
-    position_index: Vec<(u32, u32)>,
+    pub(crate) injection_error_probability: f64,
+    pub(crate) factories: Vec<Box<dyn FactoryModel>>,
+    pub(crate) buffer: MagicStateBuffer,
+    pub(crate) routing: Box<dyn routing::RoutingModel>,
+    pub(crate) position_index: Vec<(u32, u32)>,
 
     // Simulation state
-    event_queue: EventQueue,
-    current_cycle: u64,
-    rng: ChaCha12Rng,
-    factory_rngs: Vec<ChaCha12Rng>,
-    seed: u64,
-    max_cycles: Option<u64>,
+    pub(crate) event_queue: EventQueue,
+    pub(crate) current_cycle: u64,
+    pub(crate) rng: ChaCha12Rng,
+    pub(crate) factory_rngs: Vec<ChaCha12Rng>,
+    pub(crate) seed: u64,
+    pub(crate) max_cycles: Option<u64>,
 
     // Stalled T-gates: ready but waiting for a magic state.
-    // Each entry pairs the gate key with the cycle it stalled, replacing the
-    // former HashMap<OpKey, u64> side-table with zero per-stall hashing.
-    stalled_gates: VecDeque<(OpKey, u64)>,
+    pub(crate) stalled_gates: VecDeque<(OpKey, u64)>,
 
     // Measurement hook dispatch — flat table indexed by hook_id * 2 + outcome.
-    // Pre-resolved at construction so the hot loop does a single Vec::get.
-    hook_table: Vec<SmallVec<[OpKey; 2]>>,
+    pub(crate) hook_table: Vec<SmallVec<[OpKey; 2]>>,
     /// Tracks completed ops for dag.activate_ops() predecessor recomputation.
-    completed_set: SecondaryMap<OpKey, ()>,
+    pub(crate) completed_set: SecondaryMap<OpKey, ()>,
 
     // Termination tracking (total_ops grows when fixups are injected or hooks activate)
-    total_ops: u64,
-    completed_ops: u64,
+    pub(crate) total_ops: u64,
+    pub(crate) completed_ops: u64,
 
     // Stable trace IDs: maps arena keys → IR OpId (or synthetic fixup ID).
-    key_to_op_id: SecondaryMap<OpKey, u64>,
-    next_synthetic_id: u64,
+    pub(crate) key_to_op_id: SecondaryMap<OpKey, u64>,
+    pub(crate) next_synthetic_id: u64,
 
     // Trace collection (append-only, pre-allocated)
-    trace: TraceCollector,
+    pub(crate) trace: TraceCollector,
 }
 
 impl Engine {
@@ -332,8 +262,6 @@ impl Engine {
     /// 4. Schedule all newly ready gates.
     pub fn step(&mut self) {
         let Some(cycle) = self.event_queue.peek_cycle() else {
-            // No pending events — factories are always running, so this only
-            // occurs after all ops complete. The run() loop guards on is_complete().
             return;
         };
         self.current_cycle = cycle;
@@ -357,304 +285,12 @@ impl Engine {
         self.completed_ops >= self.total_ops
     }
 
-    // ── Trace ID resolution ──────────────────────────────────────────────────
-
     /// Resolve an arena key to a stable trace ID.
     ///
     /// Original ops → IR `OpId`. Fixup nodes → `SYNTHETIC_ID_FLAG | counter`.
     #[inline]
-    fn trace_id(&self, key: OpKey) -> u64 {
+    pub(crate) fn trace_id(&self, key: OpKey) -> u64 {
         self.key_to_op_id.get(key).copied().unwrap_or(0)
-    }
-
-    // ── Event processing ─────────────────────────────────────────────────────
-
-    fn process_event(&mut self, event: TimedEvent) {
-        match event.event {
-            EngineEvent::FactoryProduced { factory_id } => {
-                self.trace
-                    .record(event.cycle, TraceEventKind::FactoryProduced { factory_id });
-                if self.buffer.try_enqueue() {
-                    self.trace.record(
-                        event.cycle,
-                        TraceEventKind::BufferEnqueue {
-                            occupancy: self.buffer.occupancy(),
-                        },
-                    );
-                } else {
-                    self.trace.record(event.cycle, TraceEventKind::BufferFull);
-                }
-                self.start_factory(factory_id, event.cycle);
-            }
-            EngineEvent::FactoryFailed { factory_id } => {
-                self.trace
-                    .record(event.cycle, TraceEventKind::FactoryFailed { factory_id });
-                self.start_factory(factory_id, event.cycle);
-            }
-            EngineEvent::GateCompleted { gate } => {
-                let gate_id = self.trace_id(gate);
-                let kind = self.dag.get(gate).map(|op| op.kind);
-                if kind == Some(OpKind::Fixup) {
-                    self.trace.record(
-                        event.cycle,
-                        TraceEventKind::FixupCompleted { fixup: gate_id },
-                    );
-                } else {
-                    self.trace
-                        .record(event.cycle, TraceEventKind::GateCompleted { gate: gate_id });
-                }
-                self.completed_ops += 1;
-                if !self.hook_table.is_empty() {
-                    self.completed_set.insert(gate, ());
-                }
-                self.complete_gate(gate, kind);
-            }
-        }
-    }
-
-    /// Handle a gate that has finished executing.
-    ///
-    /// For T-gates and rotations, rolls the injection error die. On error,
-    /// inserts a fixup node (already in the ready queue) and increments
-    /// `total_ops`. For measurements with hooks, samples the outcome and
-    /// activates conditional ops. Otherwise, releases successors.
-    fn complete_gate(&mut self, gate: OpKey, kind: Option<OpKind>) {
-        let Some(kind) = kind else {
-            return;
-        };
-
-        let inject = match kind {
-            OpKind::TGate | OpKind::Rotation { .. } => {
-                self.rng.random::<f64>() < self.injection_error_probability
-            }
-            OpKind::Clifford | OpKind::Measurement { .. } | OpKind::Fixup => false,
-        };
-
-        if inject {
-            let gate_id = self.trace_id(gate);
-            self.trace.record(
-                self.current_cycle,
-                TraceEventKind::InjectionError { gate: gate_id },
-            );
-            let fixup_key = self.dag.inject_fixup(gate, &mut *self.ready_set);
-            let synthetic_id = SYNTHETIC_ID_FLAG | self.next_synthetic_id;
-            self.next_synthetic_id += 1;
-            self.key_to_op_id.insert(fixup_key, synthetic_id);
-            self.trace.record(
-                self.current_cycle,
-                TraceEventKind::FixupInserted {
-                    fixup: synthetic_id,
-                    original: gate_id,
-                },
-            );
-            // Fixup is now in ready_set. Count it so is_complete() stays correct.
-            self.total_ops += 1;
-        } else {
-            if let OpKind::Measurement {
-                hook: Some(hook_id),
-            } = kind
-            {
-                self.dispatch_hook(gate, hook_id);
-            }
-            self.dag.release_successors(gate, &mut *self.ready_set);
-        }
-    }
-
-    /// Sample a measurement outcome and activate the corresponding ops.
-    fn dispatch_hook(&mut self, gate: OpKey, hook_id: MeasurementHookId) {
-        let gate_id = self.trace_id(gate);
-
-        let outcome = if self.rng.random::<bool>() {
-            MeasurementOutcome::One
-        } else {
-            MeasurementOutcome::Zero
-        };
-
-        self.trace.record(
-            self.current_cycle,
-            TraceEventKind::MeasurementOutcome {
-                gate: gate_id,
-                outcome,
-            },
-        );
-
-        let idx = hook_table_index(hook_id, outcome);
-        let Some(to_activate) = self.hook_table.get(idx) else {
-            return;
-        };
-        if to_activate.is_empty() {
-            return;
-        }
-
-        let completed_set = &self.completed_set;
-        self.dag.activate_ops(
-            to_activate,
-            &|k| completed_set.contains_key(k),
-            &mut *self.ready_set,
-        );
-
-        #[allow(clippy::cast_possible_truncation)]
-        let activated_count = to_activate.len() as u32;
-        self.total_ops += u64::from(activated_count);
-
-        self.trace.record(
-            self.current_cycle,
-            TraceEventKind::OpsActivated {
-                gate: gate_id,
-                activated_count,
-            },
-        );
-    }
-
-    /// Compute total gate cost including routing latency, emit routing trace
-    /// events if the routing cost is non-zero.
-    fn total_gate_cost(&mut self, gate: OpKey) -> u32 {
-        let (base_cost, routing_cost) = if let Some(op) = self.dag.get(gate) {
-            let rc = self
-                .routing
-                .latency(op.qubits.as_slice(), &self.position_index);
-            (op.cycle_cost, rc)
-        } else {
-            (1, 0)
-        };
-
-        if routing_cost > 0 {
-            let gate_id = self.trace_id(gate);
-            self.trace.record(
-                self.current_cycle,
-                TraceEventKind::RoutingStarted { gate: gate_id },
-            );
-            self.trace.record(
-                self.current_cycle,
-                TraceEventKind::RoutingCompleted {
-                    gate: gate_id,
-                    latency: routing_cost,
-                },
-            );
-        }
-
-        base_cost.saturating_add(routing_cost)
-    }
-
-    /// Schedule all gates currently in the ready queue.
-    ///
-    /// T-gates and rotations consume a magic state; if none is available they
-    /// are moved to `stalled_gates`. All other gate kinds are scheduled directly.
-    fn schedule_ready_gates(&mut self) {
-        while let Some(gate) = self.ready_set.pop() {
-            let gate_id = self.trace_id(gate);
-            self.trace.record(
-                self.current_cycle,
-                TraceEventKind::GateReady { gate: gate_id },
-            );
-
-            let needs_magic_state = matches!(
-                self.dag.get(gate).map(|op| op.kind),
-                Some(OpKind::TGate) | Some(OpKind::Rotation { .. })
-            );
-
-            if needs_magic_state {
-                if self.buffer.try_dequeue() {
-                    self.trace.record(
-                        self.current_cycle,
-                        TraceEventKind::BufferDequeue {
-                            occupancy: self.buffer.occupancy(),
-                        },
-                    );
-                    self.trace.record(
-                        self.current_cycle,
-                        TraceEventKind::GateServed {
-                            gate: gate_id,
-                            wait: 0,
-                        },
-                    );
-                    self.schedule_gate_completion(gate);
-                } else {
-                    self.trace.record(
-                        self.current_cycle,
-                        TraceEventKind::GateStalled { gate: gate_id },
-                    );
-                    self.stalled_gates.push_back((gate, self.current_cycle));
-                }
-            } else {
-                self.trace.record(
-                    self.current_cycle,
-                    TraceEventKind::GateScheduled { gate: gate_id },
-                );
-                self.schedule_gate_completion(gate);
-            }
-        }
-    }
-
-    /// Schedule the `GateCompleted` event for `gate`, accounting for its base
-    /// cost and any routing latency.
-    fn schedule_gate_completion(&mut self, gate: OpKey) {
-        let cost = self.total_gate_cost(gate);
-        self.event_queue.schedule(
-            self.current_cycle + u64::from(cost),
-            EngineEvent::GateCompleted { gate },
-        );
-    }
-
-    /// Serve as many stalled gates as the buffer allows (FIFO order).
-    ///
-    /// Stops as soon as the buffer is empty — once empty, no further gates
-    /// in the queue can be served this cycle.
-    fn try_serve_stalled_gates(&mut self) {
-        // Serve from the front. On buffer exhaustion, break — the front gate and
-        // everything behind it stay queued in FIFO order. No scratch allocation.
-        while let Some(&(gate, stall_cycle)) = self.stalled_gates.front() {
-            if !self.buffer.try_dequeue() {
-                break;
-            }
-            self.stalled_gates.pop_front();
-
-            let wait =
-                u32::try_from(self.current_cycle.saturating_sub(stall_cycle)).unwrap_or(u32::MAX);
-
-            self.trace.record(
-                self.current_cycle,
-                TraceEventKind::BufferDequeue {
-                    occupancy: self.buffer.occupancy(),
-                },
-            );
-            self.trace.record(
-                self.current_cycle,
-                TraceEventKind::GateServed {
-                    gate: self.trace_id(gate),
-                    wait,
-                },
-            );
-            self.schedule_gate_completion(gate);
-        }
-    }
-
-    /// Schedule the next production event for factory `factory_id`.
-    ///
-    /// Called once per factory at construction (via `new`) and once after each
-    /// factory event (produced or failed) to keep the factory continuously running.
-    fn start_factory(&mut self, factory_id: u16, current_cycle: u64) {
-        let idx = usize::from(factory_id);
-        if idx >= self.factories.len() {
-            return;
-        }
-        // Split borrow: factories[idx] and factory_rngs[idx] are different fields.
-        // idx is bounds-checked above, so indexing cannot panic.
-        #[allow(clippy::indexing_slicing)]
-        let outcome =
-            self.factories[idx].schedule_production(current_cycle, &mut self.factory_rngs[idx]);
-        let (event_cycle, event) = match outcome {
-            FactoryOutcome::Produced { completion_cycle } => (
-                completion_cycle,
-                EngineEvent::FactoryProduced { factory_id },
-            ),
-            FactoryOutcome::Failed { failure_cycle } => {
-                (failure_cycle, EngineEvent::FactoryFailed { factory_id })
-            }
-        };
-        self.trace
-            .record(current_cycle, TraceEventKind::FactoryStarted { factory_id });
-        self.event_queue.schedule(event_cycle, event);
     }
 }
 
@@ -804,8 +440,6 @@ mod tests {
 
     // ── Smoke test ────────────────────────────────────────────────────────────
 
-    /// Single Clifford gate on a cultivation hardware model: engine must
-    /// terminate, produce a non-empty trace, and advance at least one cycle.
     #[test]
     fn smoke_single_clifford_cultivation() {
         let circuit = validated(single_clifford());
@@ -833,7 +467,7 @@ mod tests {
     #[test]
     fn rejects_manhattan_without_positions() {
         let hw = manhattan_hw();
-        let circuit = validated(single_clifford()); // qubit_positions: None
+        let circuit = validated(single_clifford());
         assert!(matches!(
             Engine::new(
                 &circuit,
@@ -849,8 +483,8 @@ mod tests {
 
     #[test]
     fn scalar_routing_does_not_require_positions() {
-        let hw = cultivation_hw(); // scalar routing
-        let circuit = validated(single_clifford()); // qubit_positions: None
+        let hw = cultivation_hw();
+        let circuit = validated(single_clifford());
         let engine = Engine::new(
             &circuit,
             &hw,

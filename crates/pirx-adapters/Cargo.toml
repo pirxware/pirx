@@ -12,6 +12,12 @@ repository.workspace = true
 [dependencies]
 pirx-ir = { workspace = true }
 thiserror = { workspace = true }
+smallvec = { workspace = true }
+oq3_semantics = "0.7.0"
+oq3_source_file = "0.7.0"
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

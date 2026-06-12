@@ -1,0 +1,27 @@
+[meta]
+name = "test-cultivation"
+
+[qec]
+code_type = "surface_code"
+code_distance = 7
+physical_error_rate = 1e-3
+
+[timing]
+cycle_time_us = 1.0
+
+[factory]
+type = "cultivation"
+count = 1
+lambda_raw = 0.002
+fault_distance = 3
+
+[injection]
+error_probability = 0.5
+fixup_cost_cycles = 1
+
+[routing]
+model = "scalar"
+overhead_fraction = 0.5
+
+[buffer]
+capacity = 4

@@ -1,0 +1,22 @@
+{
+  "ops": [
+    {"id": 0, "kind": "TGate", "qubits": [0], "initially_active": true},
+    {"id": 1, "kind": "TGate", "qubits": [0], "initially_active": true},
+    {"id": 2, "kind": "TGate", "qubits": [0], "initially_active": true}
+  ],
+  "deps": [
+    {"from": 0, "to": 1},
+    {"from": 1, "to": 2}
+  ],
+  "qubit_count": 1,
+  "qubit_positions": null,
+  "hooks": [],
+  "metadata": {
+    "name": "t-gate-chain",
+    "source_framework": "test",
+    "t_count": 3,
+    "clifford_count": 0,
+    "rotation_count": 0,
+    "depth": 3
+  }
+}

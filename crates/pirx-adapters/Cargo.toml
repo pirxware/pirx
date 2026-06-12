@@ -9,9 +9,22 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 
+[features]
+tket-json = ["dep:tket-json-rs", "dep:serde_json"]
+
 [dependencies]
 pirx-ir = { workspace = true }
 thiserror = { workspace = true }
+smallvec = { workspace = true }
+oq3_semantics = { workspace = true }
+oq3_source_file = { workspace = true }
+tket-json-rs = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tket-json-rs = { workspace = true }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

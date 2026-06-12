@@ -1,5 +1,13 @@
 [advisories]
-ignore = []
+ignore = [
+    # proc-macro-error is unmaintained but pulled in transitively via
+    # boolenum 0.1.0 → oq3_semantics 0.7.0.  No newer version of either
+    # crate exists upstream (Qiskit/openqasm3_parser).  The advisory is
+    # about maintenance status, not a security vulnerability.
+    # Revisit when oq3_semantics publishes a release that drops boolenum.
+    # https://rustsec.org/advisories/RUSTSEC-2024-0370
+    "RUSTSEC-2024-0370",
+]
 
 [licenses]
 allow = [

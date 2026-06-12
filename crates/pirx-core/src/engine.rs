@@ -5,7 +5,7 @@
 //! All stochastic decisions flow through an explicit `ChaCha12Rng` seeded from
 //! [`EngineConfig::seed`], ensuring full reproducibility (same seed → same trace).
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 
 use pirx_hw::{RoutingConfig, model::HardwareModel};
 use pirx_ir::{
@@ -123,10 +123,10 @@ pub struct Engine {
     seed: u64,
     max_cycles: Option<u64>,
 
-    // Stalled T-gates: ready but waiting for a magic state
-    stalled_gates: VecDeque<OpKey>,
-    /// Cycle at which each gate entered the stall queue, for wait-time accounting.
-    stall_start: HashMap<OpKey, u64>,
+    // Stalled T-gates: ready but waiting for a magic state.
+    // Each entry pairs the gate key with the cycle it stalled, replacing the
+    // former HashMap<OpKey, u64> side-table with zero per-stall hashing.
+    stalled_gates: VecDeque<(OpKey, u64)>,
 
     // Measurement hook dispatch — flat table indexed by hook_id * 2 + outcome.
     // Pre-resolved at construction so the hot loop does a single Vec::get.
@@ -286,8 +286,10 @@ impl Engine {
             factory_rngs,
             seed: config.seed,
             max_cycles: config.max_cycles,
-            stalled_gates: VecDeque::new(),
-            stall_start: HashMap::new(),
+            #[allow(clippy::cast_possible_truncation)]
+            stalled_gates: VecDeque::with_capacity(
+                circuit.metadata.t_count.min(n_ops as u64) as usize
+            ),
             hook_table,
             completed_set: SecondaryMap::with_capacity(
                 n_ops.saturating_add(n_ops / 2).saturating_add(16),
@@ -569,8 +571,7 @@ impl Engine {
                         self.current_cycle,
                         TraceEventKind::GateStalled { gate: gate_id },
                     );
-                    self.stalled_gates.push_back(gate);
-                    self.stall_start.insert(gate, self.current_cycle);
+                    self.stalled_gates.push_back((gate, self.current_cycle));
                 }
             } else {
                 self.trace.record(
@@ -599,17 +600,14 @@ impl Engine {
     fn try_serve_stalled_gates(&mut self) {
         // Serve from the front. On buffer exhaustion, break — the front gate and
         // everything behind it stay queued in FIFO order. No scratch allocation.
-        while let Some(&gate) = self.stalled_gates.front() {
+        while let Some(&(gate, stall_cycle)) = self.stalled_gates.front() {
             if !self.buffer.try_dequeue() {
                 break;
             }
             self.stalled_gates.pop_front();
 
-            let stall_cycle = self.stall_start.remove(&gate).unwrap_or(self.current_cycle);
-            let wait_u64 = self.current_cycle.saturating_sub(stall_cycle);
-            // Stall durations fit in u32 for any realistic simulation;
-            // saturate to MAX rather than truncate silently.
-            let wait = u32::try_from(wait_u64).unwrap_or(u32::MAX);
+            let wait =
+                u32::try_from(self.current_cycle.saturating_sub(stall_cycle)).unwrap_or(u32::MAX);
 
             self.trace.record(
                 self.current_cycle,

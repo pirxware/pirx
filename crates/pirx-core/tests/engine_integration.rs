@@ -21,9 +21,12 @@ use pirx_hw::{
         MetaConfig, QecConfig, TimingConfig, load,
     },
 };
-use pirx_ir::ValidatedCircuit;
-use pirx_ir::circuit::MeasurementOutcome;
-use pirx_ir::circuit::{CircuitMetadata, Dependency, OpKind, Operation, ProfilerCircuit};
+use pirx_ir::{
+    ValidatedCircuit,
+    circuit::{
+        CircuitMetadata, Dependency, MeasurementOutcome, OpKind, Operation, ProfilerCircuit,
+    },
+};
 use smallvec::smallvec;
 
 // ── Hardware fixtures ─────────────────────────────────────────────────────────

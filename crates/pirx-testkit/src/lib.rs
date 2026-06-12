@@ -16,10 +16,12 @@ use pirx_hw::{
         MetaConfig, QecConfig, TimingConfig,
     },
 };
-use pirx_ir::ValidatedCircuit;
-use pirx_ir::circuit::{
-    CircuitMetadata, ConditionalActivation, Dependency, MeasurementHook, MeasurementOutcome,
-    OpKind, Operation, ProfilerCircuit,
+use pirx_ir::{
+    ValidatedCircuit,
+    circuit::{
+        CircuitMetadata, ConditionalActivation, Dependency, MeasurementHook, MeasurementOutcome,
+        OpKind, Operation, ProfilerCircuit,
+    },
 };
 use smallvec::smallvec;
 

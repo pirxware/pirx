@@ -11,11 +11,11 @@ build-release:
 # ── Format & Lint ─────────────────────────────────────────────────────────────
 
 fmt:
-	cargo fmt --all
+	cargo +nightly fmt --all
 	cargo clippy --workspace --all-targets --fix --allow-dirty --allow-staged -- -D warnings
 
 check:
-	cargo fmt --all -- --check
+	cargo +nightly fmt --all -- --check
 	cargo clippy --locked --workspace --all-targets -- -D warnings
 
 # ── Test ──────────────────────────────────────────────────────────────────────

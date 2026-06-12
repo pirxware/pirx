@@ -266,16 +266,17 @@ mod tests {
             TimingConfig,
         },
     };
-    use pirx_ir::ValidatedCircuit;
-    use pirx_ir::circuit::{CircuitMetadata, Dependency, OpKind, Operation, ProfilerCircuit};
+    use pirx_ir::{
+        ValidatedCircuit,
+        circuit::{CircuitMetadata, Dependency, OpKind, Operation, ProfilerCircuit},
+    };
     use smallvec::smallvec;
 
+    use super::{BottleneckType, ProfileAnalyzer};
     use crate::{
         engine::{Engine, EngineConfig},
         trace::TraceEventKind,
     };
-
-    use super::{BottleneckType, ProfileAnalyzer};
 
     fn validated(circuit: ProfilerCircuit) -> ValidatedCircuit {
         pirx_ir::validate::validate(circuit).expect("test fixture must be valid")

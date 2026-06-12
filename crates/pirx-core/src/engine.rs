@@ -7,22 +7,25 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use pirx_hw::RoutingConfig;
-use pirx_hw::model::HardwareModel;
-use pirx_ir::ValidatedCircuit;
-use pirx_ir::circuit::{GridPosition, MeasurementHookId, MeasurementOutcome, OpId};
+use pirx_hw::{RoutingConfig, model::HardwareModel};
+use pirx_ir::{
+    ValidatedCircuit,
+    circuit::{GridPosition, MeasurementHookId, MeasurementOutcome, OpId},
+};
 use rand::{Rng as _, SeedableRng};
 use rand_chacha::ChaCha12Rng;
 use slotmap::SecondaryMap;
 use smallvec::SmallVec;
 use thiserror::Error;
 
-use crate::buffer::MagicStateBuffer;
-use crate::dag::{Dag, DagBuild, DagError, FifoReadyQueue, OpKey, OpKind, ReadyQueue};
-use crate::events::{EngineEvent, EventQueue, TimedEvent};
-use crate::factory::{FactoryError, FactoryModel, FactoryOutcome, create_factories};
-use crate::routing;
-use crate::trace::{SYNTHETIC_ID_FLAG, Trace, TraceCollector, TraceEventKind};
+use crate::{
+    buffer::MagicStateBuffer,
+    dag::{Dag, DagBuild, DagError, FifoReadyQueue, OpKey, OpKind, ReadyQueue},
+    events::{EngineEvent, EventQueue, TimedEvent},
+    factory::{FactoryError, FactoryModel, FactoryOutcome, create_factories},
+    routing,
+    trace::{SYNTHETIC_ID_FLAG, Trace, TraceCollector, TraceEventKind},
+};
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -664,13 +667,17 @@ impl Engine {
     clippy::indexing_slicing
 )]
 mod tests {
-    use pirx_hw::model::{
-        BufferConfig, FactoryConfig, HardwareModel, InjectionConfig, MetaConfig, QecConfig,
-        TimingConfig,
+    use pirx_hw::{
+        CodeType, RoutingConfig,
+        model::{
+            BufferConfig, FactoryConfig, HardwareModel, InjectionConfig, MetaConfig, QecConfig,
+            TimingConfig,
+        },
     };
-    use pirx_hw::{CodeType, RoutingConfig};
-    use pirx_ir::ValidatedCircuit;
-    use pirx_ir::circuit::{CircuitMetadata, OpKind as IrOpKind, Operation, ProfilerCircuit};
+    use pirx_ir::{
+        ValidatedCircuit,
+        circuit::{CircuitMetadata, OpKind as IrOpKind, Operation, ProfilerCircuit},
+    };
     use smallvec::smallvec;
 
     use super::{Engine, EngineConfig, EngineError};

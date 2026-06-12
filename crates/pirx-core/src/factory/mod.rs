@@ -10,7 +10,6 @@ mod distillation;
 
 pub use cultivation::CultivationFactory;
 pub use distillation::DistillationFactory;
-
 use pirx_hw::model::{FactoryConfig, QecConfig};
 use rand_chacha::ChaCha12Rng;
 use serde::{Deserialize, Serialize};

@@ -9,8 +9,10 @@
 use codspeed_criterion_compat::{
     BenchmarkId, Criterion, SamplingMode, criterion_group, criterion_main,
 };
-use pirx_core::analysis::ProfileAnalyzer;
-use pirx_core::engine::{Engine, EngineConfig};
+use pirx_core::{
+    analysis::ProfileAnalyzer,
+    engine::{Engine, EngineConfig},
+};
 
 const SEED: u64 = 42;
 

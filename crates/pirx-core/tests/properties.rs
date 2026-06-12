@@ -10,8 +10,10 @@
     clippy::cast_possible_truncation
 )]
 
-use pirx_core::engine::{Engine, EngineConfig};
-use pirx_core::trace::TraceEventKind;
+use pirx_core::{
+    engine::{Engine, EngineConfig},
+    trace::TraceEventKind,
+};
 use pirx_hw::model::{BufferConfig, FactoryConfig};
 use proptest::prelude::*;
 

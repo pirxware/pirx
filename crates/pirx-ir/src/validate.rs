@@ -145,14 +145,24 @@ pub fn validate(circuit: ProfilerCircuit) -> Result<ValidatedCircuit, Validation
         }
     }
 
+    // Build id → index map for O(1) op lookups in hook validation and Kahn's.
+    let id_to_idx: std::collections::HashMap<u64, usize> = circuit
+        .ops
+        .iter()
+        .enumerate()
+        .map(|(i, op)| (op.id, i))
+        .collect();
+
     // Validate hook activation targets: must exist and be inactive.
     for hook in &circuit.hooks {
         for activation in &hook.activations {
             for &op_id in &activation.ops_to_activate {
-                let Some(op) = circuit.ops.iter().find(|o| o.id == op_id) else {
+                let Some(&idx) = id_to_idx.get(&op_id) else {
                     return Err(ValidationError::DanglingDependency(op_id));
                 };
-                if op.initially_active {
+                if let Some(op) = circuit.ops.get(idx)
+                    && op.initially_active
+                {
                     return Err(ValidationError::ActiveOpInHook(op_id));
                 }
             }
@@ -160,52 +170,60 @@ pub fn validate(circuit: ProfilerCircuit) -> Result<ValidatedCircuit, Validation
     }
 
     // No orphaned inactive ops: every inactive op must be reachable from a hook.
+    let hook_targets: std::collections::HashSet<u64> = circuit
+        .hooks
+        .iter()
+        .flat_map(|h| {
+            h.activations
+                .iter()
+                .flat_map(|a| a.ops_to_activate.iter().copied())
+        })
+        .collect();
     for op in &circuit.ops {
-        if !op.initially_active {
-            let referenced = circuit.hooks.iter().any(|h| {
-                h.activations
-                    .iter()
-                    .any(|a| a.ops_to_activate.contains(&op.id))
-            });
-            if !referenced {
-                return Err(ValidationError::OrphanedInactiveOp(op.id));
+        if !op.initially_active && !hook_targets.contains(&op.id) {
+            return Err(ValidationError::OrphanedInactiveOp(op.id));
+        }
+    }
+
+    // Acyclicity check via Kahn's algorithm on index-based adjacency — O(V+E).
+    let num_ops = circuit.ops.len();
+    let mut in_degree = vec![0u32; num_ops];
+    let mut successors: Vec<Vec<usize>> = vec![Vec::new(); num_ops];
+    for dep in &circuit.deps {
+        // Both endpoints already validated against id_set above.
+        if let (Some(&from_idx), Some(&to_idx)) = (id_to_idx.get(&dep.from), id_to_idx.get(&dep.to))
+        {
+            if let Some(succs) = successors.get_mut(from_idx) {
+                succs.push(to_idx);
+            }
+            if let Some(deg) = in_degree.get_mut(to_idx) {
+                *deg = deg.saturating_add(1);
             }
         }
     }
 
-    // Acyclicity check via Kahn's algorithm (topological sort).
-    // Runs on ALL ops (including inactive) — the full DAG must be acyclic.
-    let mut in_degree = std::collections::HashMap::with_capacity(circuit.ops.len());
-    for op in &circuit.ops {
-        in_degree.insert(op.id, 0u64);
-    }
-    for dep in &circuit.deps {
-        *in_degree.entry(dep.to).or_insert(0) += 1;
-    }
-
     let mut queue = VecDeque::new();
-    for (&id, &deg) in &in_degree {
+    for (idx, &deg) in in_degree.iter().enumerate() {
         if deg == 0 {
-            queue.push_back(id);
+            queue.push_back(idx);
         }
     }
 
     let mut visited = 0u64;
     while let Some(node) = queue.pop_front() {
         visited += 1;
-        for dep in &circuit.deps {
-            if dep.from == node
-                && let Some(count) = in_degree.get_mut(&dep.to)
-            {
-                *count -= 1;
-                if *count == 0 {
-                    queue.push_back(dep.to);
+        let succs = successors.get(node).map_or(&[] as &[usize], Vec::as_slice);
+        for &succ in succs {
+            if let Some(deg) = in_degree.get_mut(succ) {
+                *deg = deg.saturating_sub(1);
+                if *deg == 0 {
+                    queue.push_back(succ);
                 }
             }
         }
     }
 
-    if visited != circuit.ops.len() as u64 {
+    if visited != num_ops as u64 {
         return Err(ValidationError::CyclicDag);
     }
 

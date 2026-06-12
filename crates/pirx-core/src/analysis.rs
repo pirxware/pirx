@@ -4,8 +4,6 @@
 //! returns a time-bucketed [`ExecutionProfile`]. No engine state is touched;
 //! the analyzer is a pure function of the trace.
 
-use std::collections::HashMap;
-
 use serde::{Deserialize, Serialize};
 
 use crate::trace::{Trace, TraceEventKind};
@@ -92,7 +90,9 @@ impl ProfileAnalyzer {
             .unwrap_or(usize::MAX / 2);
 
         // Pre-allocate all accumulation buffers.
-        let mut factory_active_counts = vec![0u32; num_buckets];
+        // Difference array: deltas[b] += 1 at interval start, deltas[b+1] -= 1 at
+        // interval end. Prefix-summed into active counts after the event loop.
+        let mut factory_active_deltas = vec![0i64; num_buckets.saturating_add(1)];
         let mut factory_failure_counts = vec![0u32; num_buckets];
         let mut buffer_occupancy = vec![0u32; num_buckets];
         let mut stalls_in_bucket = vec![0u32; num_buckets];
@@ -102,11 +102,11 @@ impl ProfileAnalyzer {
         let mut critical_path_extension: u64 = 0;
 
         // Per-factory start cycle for active-interval tracking.
-        // Capacity bounded by factory_count.
-        let mut factory_starts: HashMap<u16, u64> =
-            HashMap::with_capacity(usize::from(factory_count));
+        // Dense Vec indexed by factory_id — u16 keyspace, no hash overhead.
+        let mut factory_starts: Vec<Option<u64>> = vec![None; usize::from(factory_count)];
         // Per-fixup insert cycle for critical-path extension accounting.
-        let mut fixup_starts: HashMap<u64, u64> = HashMap::new();
+        let mut fixup_starts: std::collections::HashMap<u64, u64> =
+            std::collections::HashMap::new();
 
         let to_bucket = |cycle: u64| -> usize {
             usize::try_from(cycle / resolution)
@@ -119,30 +119,42 @@ impl ProfileAnalyzer {
             let b = to_bucket(event.cycle);
             match &event.kind {
                 TraceEventKind::FactoryStarted { factory_id } => {
-                    factory_starts.insert(*factory_id, event.cycle);
+                    if let Some(slot) = factory_starts.get_mut(usize::from(*factory_id)) {
+                        *slot = Some(event.cycle);
+                    }
                 }
 
                 TraceEventKind::FactoryProduced { factory_id } => {
-                    // Mark every bucket this factory's run spanned as active.
+                    // Mark interval [start_b, b] via difference array endpoints.
                     // FactoryStarted for the next run is recorded immediately after
                     // in the same cycle, so factory_starts is still the OLD start here.
-                    if let Some(&start) = factory_starts.get(factory_id) {
+                    if let Some(start) = factory_starts
+                        .get(usize::from(*factory_id))
+                        .copied()
+                        .flatten()
+                    {
                         let start_b = to_bucket(start);
-                        for fill_b in start_b..=b {
-                            if let Some(c) = factory_active_counts.get_mut(fill_b) {
-                                *c = c.saturating_add(1);
-                            }
+                        if let Some(d) = factory_active_deltas.get_mut(start_b) {
+                            *d += 1;
+                        }
+                        if let Some(d) = factory_active_deltas.get_mut(b + 1) {
+                            *d -= 1;
                         }
                     }
                 }
 
                 TraceEventKind::FactoryFailed { factory_id } => {
-                    if let Some(&start) = factory_starts.get(factory_id) {
+                    if let Some(start) = factory_starts
+                        .get(usize::from(*factory_id))
+                        .copied()
+                        .flatten()
+                    {
                         let start_b = to_bucket(start);
-                        for fill_b in start_b..=b {
-                            if let Some(c) = factory_active_counts.get_mut(fill_b) {
-                                *c = c.saturating_add(1);
-                            }
+                        if let Some(d) = factory_active_deltas.get_mut(start_b) {
+                            *d += 1;
+                        }
+                        if let Some(d) = factory_active_deltas.get_mut(b + 1) {
+                            *d -= 1;
                         }
                     }
                     if let Some(c) = factory_failure_counts.get_mut(b) {
@@ -201,23 +213,31 @@ impl ProfileAnalyzer {
         // Fill remaining partial factory runs up to total_cycles.
         // The simulation ends when all gates complete, not when all factories finish.
         // factory_starts now holds the START of each factory's most recent (still
-        // in-flight) production run — fill those intervals to the last bucket.
+        // in-flight) production run — mark those intervals to the last bucket.
         let last_b = to_bucket(total_cycles);
-        for &start in factory_starts.values() {
+        for &start in factory_starts.iter().flatten() {
             let start_b = to_bucket(start);
-            for fill_b in start_b..=last_b {
-                if let Some(c) = factory_active_counts.get_mut(fill_b) {
-                    *c = c.saturating_add(1);
-                }
+            if let Some(d) = factory_active_deltas.get_mut(start_b) {
+                *d += 1;
+            }
+            if let Some(d) = factory_active_deltas.get_mut(last_b + 1) {
+                *d -= 1;
             }
         }
 
-        // Normalize active counts → utilization in [0.0, 1.0].
-        // factory_count.max(1) guards against the pathological zero-factory case.
+        // Prefix-sum the difference array into per-bucket active counts.
         let fcount = f64::from(factory_count.max(1));
-        let factory_utilization: Vec<f64> = factory_active_counts
+        let mut running: i64 = 0;
+        let factory_utilization: Vec<f64> = factory_active_deltas
+            .get(..num_buckets)
+            .unwrap_or_default()
             .iter()
-            .map(|&active| (f64::from(active) / fcount).min(1.0))
+            .map(|&delta| {
+                running += delta;
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let active = if running > 0 { running as u32 } else { 0 };
+                (f64::from(active) / fcount).min(1.0)
+            })
             .collect();
 
         // Classify bottleneck per bucket from stall counts and factory failure counts.
@@ -557,6 +577,72 @@ mod tests {
                 bt,
                 BottleneckType::None,
                 "bucket {i}: expected None, got {bt:?} (no stalls expected with warm start)"
+            );
+        }
+    }
+
+    /// Difference-array bucket fills must match a naive per-bucket reference.
+    /// Uses resolution=1 so every cycle is its own bucket — maximum granularity.
+    #[test]
+    fn difference_array_matches_naive_reference() {
+        let circuit = validated(chain_5_t_gates());
+        let hw = cultivation_cold(2);
+        let trace = Engine::new(
+            &circuit,
+            &hw,
+            EngineConfig {
+                seed: 42,
+                max_cycles: None,
+            },
+        )
+        .unwrap()
+        .run();
+
+        let resolution = 1u64;
+        let factory_count = 2u16;
+        let profile = ProfileAnalyzer::analyze(&trace, factory_count, resolution);
+
+        // Naive O(events × buckets) reference: fill every bucket in each interval.
+        let num_buckets = usize::try_from(trace.total_cycles / resolution + 1).unwrap();
+        let mut naive_active = vec![0u32; num_buckets];
+        let mut starts = std::collections::HashMap::<u16, u64>::new();
+
+        let to_b = |c: u64| usize::try_from(c / resolution).unwrap();
+
+        for event in &trace.events {
+            let b = to_b(event.cycle);
+            match &event.kind {
+                TraceEventKind::FactoryStarted { factory_id } => {
+                    starts.insert(*factory_id, event.cycle);
+                }
+                TraceEventKind::FactoryProduced { factory_id }
+                | TraceEventKind::FactoryFailed { factory_id } => {
+                    if let Some(&s) = starts.get(factory_id) {
+                        for slot in naive_active.iter_mut().take(b + 1).skip(to_b(s)) {
+                            *slot += 1;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        let last_b = to_b(trace.total_cycles);
+        for &s in starts.values() {
+            for slot in naive_active.iter_mut().take(last_b + 1).skip(to_b(s)) {
+                *slot += 1;
+            }
+        }
+
+        let fcount = f64::from(factory_count.max(1));
+        for (i, (&naive, &optimized)) in naive_active
+            .iter()
+            .zip(profile.factory_utilization.iter())
+            .enumerate()
+        {
+            let expected = (f64::from(naive) / fcount).min(1.0);
+            assert!(
+                (expected - optimized).abs() < f64::EPSILON,
+                "bucket {i}: naive={expected}, optimized={optimized}"
             );
         }
     }

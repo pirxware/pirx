@@ -30,7 +30,7 @@ pub struct TimedEvent {
     /// Monotonic insertion counter; never reset. Breaks ties within a cycle
     /// deterministically — events generated earlier in the same cycle process
     /// first, matching insertion order and satisfying P1 reproducibility.
-    pub seq: u32,
+    pub seq: u64,
     pub event: EngineEvent,
 }
 
@@ -60,7 +60,7 @@ impl Ord for TimedEvent {
 /// processing order → same trace.
 pub struct EventQueue {
     heap: BinaryHeap<Reverse<TimedEvent>>,
-    next_seq: u32,
+    next_seq: u64,
 }
 
 impl EventQueue {
@@ -146,8 +146,33 @@ mod tests {
         q.schedule(5, EngineEvent::GateCompleted { gate: k2 });
 
         // seq 0, 1, 2 — must come out in insertion order
-        let seqs: Vec<u32> = (0..3).filter_map(|_| q.pop().map(|e| e.seq)).collect();
+        let seqs: Vec<u64> = (0..3).filter_map(|_| q.pop().map(|e| e.seq)).collect();
         assert_eq!(seqs, [0, 1, 2]);
+    }
+
+    #[test]
+    fn seq_distinct_past_u32_max() {
+        let mut q = EventQueue::new();
+        q.next_seq = u32::MAX as u64 - 5;
+
+        for _ in 0..10 {
+            q.schedule(1, factory_produced(0));
+        }
+
+        let seqs: Vec<u64> = std::iter::from_fn(|| q.pop().map(|e| e.seq)).collect();
+        assert_eq!(seqs.len(), 10);
+        for window in seqs.windows(2) {
+            assert!(
+                window[1] > window[0],
+                "seq must be strictly increasing across u32::MAX boundary: {} vs {}",
+                window[0],
+                window[1]
+            );
+        }
+        assert!(
+            seqs.last().copied().unwrap() > u32::MAX as u64,
+            "seq must cross u32::MAX without saturating"
+        );
     }
 
     #[test]

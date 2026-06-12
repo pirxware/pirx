@@ -417,8 +417,7 @@ impl Engine {
 
         let inject = match kind {
             OpKind::TGate | OpKind::Rotation { .. } => {
-                // r#gen: `gen` is a reserved keyword in Rust 2024 edition.
-                self.rng.r#gen::<f64>() < self.injection_error_probability
+                self.rng.random::<f64>() < self.injection_error_probability
             }
             OpKind::Clifford | OpKind::Measurement { .. } | OpKind::Fixup => false,
         };
@@ -457,7 +456,7 @@ impl Engine {
     fn dispatch_hook(&mut self, gate: OpKey, hook_id: MeasurementHookId) {
         let gate_id = self.trace_id(gate);
 
-        let outcome = if self.rng.r#gen::<bool>() {
+        let outcome = if self.rng.random::<bool>() {
             MeasurementOutcome::One
         } else {
             MeasurementOutcome::Zero

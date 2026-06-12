@@ -4,7 +4,7 @@
 //! First abort → `Failed` at that round's completion cycle.
 //! All rounds clear → `Produced` at `current_cycle + cycles_per_round * rounds`.
 
-use rand::Rng;
+use rand::Rng as _;
 use rand_chacha::ChaCha12Rng;
 use serde::{Deserialize, Serialize};
 
@@ -27,7 +27,7 @@ impl FactoryModel for DistillationFactory {
     fn schedule_production(&self, current_cycle: u64, rng: &mut ChaCha12Rng) -> FactoryOutcome {
         let total_cycles = u64::from(self.cycles_per_round) * u64::from(self.rounds);
         for round in 0..self.rounds {
-            if rng.r#gen::<f64>() < self.abort_probability {
+            if rng.random::<f64>() < self.abort_probability {
                 let failure_cycle =
                     current_cycle + u64::from(self.cycles_per_round) * u64::from(round + 1);
                 return FactoryOutcome::Failed { failure_cycle };

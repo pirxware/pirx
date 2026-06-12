@@ -24,7 +24,7 @@ proptest! {
     /// many as the original gate count. Fixups add extra completions.
     #[test]
     fn all_gates_complete(seed in 0u64..10_000, n in 1u32..20) {
-        let circuit = pirx_testkit::t_gate_chain(n);
+        let circuit = pirx_testkit::validated(pirx_testkit::t_gate_chain(n));
         let mut hw = pirx_testkit::cultivation_hw();
         hw.buffer.preload = 4;
 
@@ -51,7 +51,7 @@ proptest! {
     /// indicates a scheduling or trace-recording bug.
     #[test]
     fn trace_events_monotonic(seed in 0u64..10_000) {
-        let circuit = pirx_testkit::t_gate_chain(10);
+        let circuit = pirx_testkit::validated(pirx_testkit::t_gate_chain(10));
         let hw = pirx_testkit::cultivation_hw();
 
         let trace = Engine::new(&circuit, &hw, EngineConfig { seed })
@@ -72,7 +72,7 @@ proptest! {
     /// Principle P1. All randomness flows through an explicit StdRng.
     #[test]
     fn determinism(seed in 0u64..10_000) {
-        let circuit = pirx_testkit::t_gate_chain(8);
+        let circuit = pirx_testkit::validated(pirx_testkit::t_gate_chain(8));
         let config = EngineConfig { seed };
 
         let t1 = Engine::new(&circuit, &pirx_testkit::cultivation_hw(), config)
@@ -91,7 +91,7 @@ proptest! {
     /// capacities and stochastic factory timing.
     #[test]
     fn buffer_occupancy_within_capacity(seed in 0u64..5_000, capacity in 1u32..16) {
-        let circuit = pirx_testkit::t_gate_chain(10);
+        let circuit = pirx_testkit::validated(pirx_testkit::t_gate_chain(10));
         let mut hw = pirx_testkit::cultivation_hw();
         hw.buffer = BufferConfig { capacity, preload: 0 };
 
@@ -120,7 +120,7 @@ proptest! {
     /// parallelism-limited, so equal is also acceptable.
     #[test]
     fn more_factories_not_slower(seed in 0u64..5_000) {
-        let circuit = pirx_testkit::t_gate_chain(6);
+        let circuit = pirx_testkit::validated(pirx_testkit::t_gate_chain(6));
         let mut hw1 = pirx_testkit::cultivation_hw();
         hw1.factory = FactoryConfig::Cultivation {
             count: 1,
@@ -150,7 +150,7 @@ proptest! {
     /// Cliffords don't consume magic states, so GateStalled must never appear.
     #[test]
     fn cliffords_never_stall(seed in 0u64..5_000, n in 1u32..30) {
-        let circuit = pirx_testkit::clifford_chain(n);
+        let circuit = pirx_testkit::validated(pirx_testkit::clifford_chain(n));
         let hw = pirx_testkit::cultivation_hw();
 
         let trace = Engine::new(&circuit, &hw, EngineConfig { seed })
@@ -171,7 +171,7 @@ proptest! {
     /// and grows on activation, so completed_ops always reaches total_ops.
     #[test]
     fn hook_circuit_terminates(seed in 0u64..10_000) {
-        let circuit = pirx_testkit::measurement_with_both_outcomes();
+        let circuit = pirx_testkit::validated(pirx_testkit::measurement_with_both_outcomes());
         let mut hw = pirx_testkit::cultivation_hw();
         hw.injection.error_probability = 0.0;
 
@@ -198,7 +198,7 @@ proptest! {
     /// must hold for circuits with hooks, not just plain gate circuits.
     #[test]
     fn hook_determinism(seed in 0u64..10_000) {
-        let circuit = pirx_testkit::measurement_with_both_outcomes();
+        let circuit = pirx_testkit::validated(pirx_testkit::measurement_with_both_outcomes());
         let hw = pirx_testkit::cultivation_hw();
         let config = EngineConfig { seed };
 
@@ -214,7 +214,7 @@ proptest! {
     /// of ops in its termination tracking.
     #[test]
     fn hook_completed_ops_accounting(seed in 0u64..10_000) {
-        let circuit = pirx_testkit::measurement_with_one_hook();
+        let circuit = pirx_testkit::validated(pirx_testkit::measurement_with_one_hook());
         let hw = pirx_testkit::cultivation_hw();
 
         let trace = Engine::new(&circuit, &hw, EngineConfig { seed })

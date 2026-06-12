@@ -9,16 +9,15 @@ use std::collections::{HashMap, VecDeque};
 
 use pirx_hw::RoutingConfig;
 use pirx_hw::model::HardwareModel;
-use pirx_ir::circuit::{
-    GridPosition, MeasurementHookId, MeasurementOutcome, OpId, ProfilerCircuit,
-};
+use pirx_ir::ValidatedCircuit;
+use pirx_ir::circuit::{GridPosition, MeasurementHookId, MeasurementOutcome, OpId};
 use rand::{Rng as _, SeedableRng, rngs::StdRng};
 use slotmap::{Key as _, SecondaryMap};
 use smallvec::SmallVec;
 use thiserror::Error;
 
 use crate::buffer::MagicStateBuffer;
-use crate::dag::{Dag, DagError, FifoReadyQueue, OpKey, OpKind, ReadyQueue};
+use crate::dag::{Dag, DagBuild, DagError, FifoReadyQueue, OpKey, OpKind, ReadyQueue};
 use crate::events::{EngineEvent, EventQueue, TimedEvent};
 use crate::factory::{FactoryError, FactoryModel, FactoryOutcome, create_factories};
 use crate::routing;
@@ -41,15 +40,6 @@ pub struct EngineConfig {
 /// the simulation is guaranteed to run to completion without error.
 #[derive(Debug, Error)]
 pub enum EngineError {
-    #[error("circuit has no operations")]
-    EmptyCircuit,
-
-    #[error("dependency graph contains a cycle")]
-    CyclicDag,
-
-    #[error("dependency references a non-existent operation")]
-    DanglingDependency,
-
     #[error("too many distinct rotation angles: {0} (maximum 65535)")]
     TooManyRotationAngles(usize),
 
@@ -70,15 +60,16 @@ pub enum EngineError {
         hook_id: MeasurementHookId,
         op_id: OpId,
     },
+
+    #[error("internal DAG error: {0}")]
+    Internal(String),
 }
 
 impl From<DagError> for EngineError {
     fn from(err: DagError) -> Self {
         match err {
-            DagError::EmptyCircuit => Self::EmptyCircuit,
-            DagError::DanglingDependency => Self::DanglingDependency,
-            DagError::CyclicDag => Self::CyclicDag,
             DagError::TooManyDistinctAngles(n) => Self::TooManyRotationAngles(n),
+            DagError::Internal(msg) => Self::Internal(msg),
         }
     }
 }
@@ -149,7 +140,7 @@ impl Engine {
     /// and RNG, seeds the initial ready queue, schedules initial factory events,
     /// and pre-allocates the trace collector.
     pub fn new(
-        circuit: &ProfilerCircuit,
+        circuit: &ValidatedCircuit,
         hw: &HardwareModel,
         config: EngineConfig,
     ) -> Result<Self, EngineError> {
@@ -163,9 +154,9 @@ impl Engine {
 
         let n_ops = circuit.ops.len();
 
-        // Build DAG — validates circuit structure (acyclicity, dangling deps).
+        // Build DAG from the validated circuit.
         // id_to_key maps IR OpId → arena OpKey for hook target resolution.
-        let (dag, id_to_key) = Dag::from_circuit(circuit, hw)?;
+        let DagBuild { dag, id_to_key } = Dag::from_circuit(circuit, hw)?;
         // Only count initially active ops; inactive ops enter via hook activation.
         let total_ops = dag.active_op_count() as u64;
 
@@ -626,10 +617,15 @@ mod tests {
         TimingConfig,
     };
     use pirx_hw::{CodeType, RoutingConfig};
+    use pirx_ir::ValidatedCircuit;
     use pirx_ir::circuit::{CircuitMetadata, OpKind as IrOpKind, Operation, ProfilerCircuit};
     use smallvec::smallvec;
 
     use super::{Engine, EngineConfig, EngineError};
+
+    fn validated(circuit: ProfilerCircuit) -> ValidatedCircuit {
+        pirx_ir::validate::validate(circuit).expect("test fixture must be valid")
+    }
 
     // ── Fixtures ─────────────────────────────────────────────────────────────
 
@@ -711,8 +707,9 @@ mod tests {
             lambda_raw: 0.002,
             fault_distance: 3,
         };
+        let circuit = validated(single_clifford());
         assert!(matches!(
-            Engine::new(&single_clifford(), &hw, EngineConfig { seed: 0 }),
+            Engine::new(&circuit, &hw, EngineConfig { seed: 0 }),
             Err(EngineError::NoFactories)
         ));
     }
@@ -724,8 +721,9 @@ mod tests {
             capacity: 0,
             preload: 0,
         };
+        let circuit = validated(single_clifford());
         assert!(matches!(
-            Engine::new(&single_clifford(), &hw, EngineConfig { seed: 0 }),
+            Engine::new(&circuit, &hw, EngineConfig { seed: 0 }),
             Err(EngineError::ZeroBuffer)
         ));
     }
@@ -736,7 +734,7 @@ mod tests {
     /// terminate, produce a non-empty trace, and advance at least one cycle.
     #[test]
     fn smoke_single_clifford_cultivation() {
-        let circuit = single_clifford();
+        let circuit = validated(single_clifford());
         let hw = cultivation_hw();
         let config = EngineConfig { seed: 42 };
 
@@ -758,7 +756,7 @@ mod tests {
     #[test]
     fn rejects_manhattan_without_positions() {
         let hw = manhattan_hw();
-        let circuit = single_clifford(); // qubit_positions: None
+        let circuit = validated(single_clifford()); // qubit_positions: None
         assert!(matches!(
             Engine::new(&circuit, &hw, EngineConfig { seed: 0 }),
             Err(EngineError::MissingQubitPositions)
@@ -768,7 +766,7 @@ mod tests {
     #[test]
     fn scalar_routing_does_not_require_positions() {
         let hw = cultivation_hw(); // scalar routing
-        let circuit = single_clifford(); // qubit_positions: None
+        let circuit = validated(single_clifford()); // qubit_positions: None
         let engine = Engine::new(&circuit, &hw, EngineConfig { seed: 42 });
         assert!(engine.is_ok());
     }

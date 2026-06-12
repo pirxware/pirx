@@ -6,3 +6,5 @@
 
 pub mod circuit;
 pub mod validate;
+
+pub use validate::ValidatedCircuit;

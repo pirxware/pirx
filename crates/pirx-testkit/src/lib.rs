@@ -7,6 +7,8 @@
 //! Tests that need a specific variation override individual fields after
 //! construction (all config fields are `pub`).
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use pirx_hw::{
     CodeType, RoutingConfig,
     model::{
@@ -14,11 +16,21 @@ use pirx_hw::{
         MetaConfig, QecConfig, TimingConfig,
     },
 };
+use pirx_ir::ValidatedCircuit;
 use pirx_ir::circuit::{
     CircuitMetadata, ConditionalActivation, Dependency, MeasurementHook, MeasurementOutcome,
     OpKind, Operation, ProfilerCircuit,
 };
 use smallvec::smallvec;
+
+/// Validate a test fixture circuit, panicking if it is invalid.
+///
+/// Every test fixture in this crate produces a valid circuit by construction.
+/// This wrapper makes that assumption explicit and provides the
+/// [`ValidatedCircuit`] proof token required by `Engine::new` and `Dag::from_circuit`.
+pub fn validated(circuit: ProfilerCircuit) -> ValidatedCircuit {
+    pirx_ir::validate::validate(circuit).expect("test fixture must be valid")
+}
 
 // ── Sub-config builders ──────────────────────────────────────────────────────
 

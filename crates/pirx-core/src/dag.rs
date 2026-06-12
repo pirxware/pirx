@@ -8,7 +8,8 @@
 use std::collections::{HashMap, VecDeque};
 
 use pirx_hw::model::HardwareModel;
-use pirx_ir::circuit::{MeasurementHookId, OpId, OpKind as IrOpKind, ProfilerCircuit, QubitId};
+use pirx_ir::ValidatedCircuit;
+use pirx_ir::circuit::{MeasurementHookId, OpId, OpKind as IrOpKind, QubitId};
 use serde::{Deserialize, Serialize};
 use slotmap::{SecondaryMap, SlotMap, new_key_type};
 use smallvec::SmallVec;
@@ -75,20 +76,22 @@ pub struct DagAdjacency {
     pub predecessor_count: SecondaryMap<OpKey, u32>,
 }
 
+/// Result of [`Dag::from_circuit`]: the DAG plus the IR-to-arena key map.
+///
+/// The engine needs `id_to_key` to resolve measurement hook targets.
+pub struct DagBuild {
+    pub dag: Dag,
+    pub id_to_key: HashMap<OpId, OpKey>,
+}
+
 /// Errors that can occur during DAG construction.
 #[derive(Debug, Error)]
 pub enum DagError {
-    #[error("circuit has no operations")]
-    EmptyCircuit,
-
-    #[error("dependency references a non-existent operation ID")]
-    DanglingDependency,
-
-    #[error("dependency graph contains a cycle")]
-    CyclicDag,
-
     #[error("too many distinct rotation angles: {0} (maximum 65535)")]
     TooManyDistinctAngles(usize),
+
+    #[error("internal error: {0}")]
+    Internal(String),
 }
 
 // ── Ready queue ──────────────────────────────────────────────────────────────
@@ -176,25 +179,19 @@ pub struct Dag {
 }
 
 impl Dag {
-    /// Build a DAG from a validated IR circuit.
+    /// Build a DAG from a [`ValidatedCircuit`].
     ///
-    /// Returns the DAG and a map from IR `OpId` to arena `OpKey`, needed by
-    /// the engine to resolve measurement hook targets.
+    /// Returns [`DagBuild`] containing the DAG and a map from IR `OpId` to
+    /// arena `OpKey`, needed by the engine to resolve measurement hook targets.
     ///
-    /// `circuit` must be non-empty and acyclic. [`pirx_ir::validate`] checks
-    /// both before circuits cross the crate boundary; `from_circuit` repeats
-    /// the acyclicity check as defence-in-depth for circuits constructed
-    /// without going through the validator.
+    /// `ValidatedCircuit` proves non-emptiness, acyclicity, unique OpIds, and
+    /// valid qubit references — no structural re-validation needed here.
     ///
     /// `hw` is used only for `injection.fixup_cost_cycles`.
     pub fn from_circuit(
-        circuit: &ProfilerCircuit,
+        circuit: &ValidatedCircuit,
         hw: &HardwareModel,
-    ) -> Result<(Self, HashMap<OpId, OpKey>), DagError> {
-        if circuit.ops.is_empty() {
-            return Err(DagError::EmptyCircuit);
-        }
-
+    ) -> Result<DagBuild, DagError> {
         let n = circuit.ops.len();
         let mut ops: SlotMap<OpKey, OpData> = SlotMap::with_capacity_and_key(n);
         let mut successors: SecondaryMap<OpKey, SmallVec<[OpKey; 4]>> =
@@ -225,11 +222,14 @@ impl Dag {
         }
 
         // Build adjacency from the dependency list.
+        // ValidatedCircuit guarantees all dep endpoints exist in id_to_key.
         for dep in &circuit.deps {
-            let &from_key = id_to_key
-                .get(&dep.from)
-                .ok_or(DagError::DanglingDependency)?;
-            let &to_key = id_to_key.get(&dep.to).ok_or(DagError::DanglingDependency)?;
+            let &from_key = id_to_key.get(&dep.from).ok_or_else(|| {
+                DagError::Internal(format!("dep.from {} not in id_to_key", dep.from))
+            })?;
+            let &to_key = id_to_key.get(&dep.to).ok_or_else(|| {
+                DagError::Internal(format!("dep.to {} not in id_to_key", dep.to))
+            })?;
             if let Some(succs) = successors.get_mut(from_key) {
                 succs.push(to_key);
             }
@@ -241,13 +241,8 @@ impl Dag {
             }
         }
 
-        // Defence-in-depth: detect cycles via Kahn's topological sort.
-        // pirx-ir runs this before circuits leave that crate; this fires only
-        // for circuits constructed without going through validate().
-        detect_cycle(&ops, &successors, &predecessor_count, n)?;
-
-        Ok((
-            Self {
+        Ok(DagBuild {
+            dag: Self {
                 ops,
                 adjacency: DagAdjacency {
                     successors,
@@ -258,7 +253,7 @@ impl Dag {
                 fixup_cost_cycles: hw.injection.fixup_cost_cycles,
             },
             id_to_key,
-        ))
+        })
     }
 
     /// Return all operations with no predecessors — the initial ready set.
@@ -437,47 +432,6 @@ fn ir_kind_to_engine(kind: &IrOpKind, angle_table: &mut Vec<f64>) -> Result<OpKi
     }
 }
 
-/// Kahn's topological sort — detects cycles without consuming the adjacency data.
-///
-/// Operates on a copy of `predecessor_count`; the original is untouched.
-fn detect_cycle(
-    ops: &SlotMap<OpKey, OpData>,
-    successors: &SecondaryMap<OpKey, SmallVec<[OpKey; 4]>>,
-    predecessor_count: &SecondaryMap<OpKey, u32>,
-    expected: usize,
-) -> Result<(), DagError> {
-    let mut in_deg: SecondaryMap<OpKey, u32> = SecondaryMap::new();
-    for (k, &c) in predecessor_count.iter() {
-        in_deg.insert(k, c);
-    }
-
-    let mut queue: VecDeque<OpKey> = ops
-        .keys()
-        .filter(|&k| in_deg.get(k).copied().unwrap_or(0) == 0)
-        .collect();
-
-    let mut visited = 0usize;
-    while let Some(node) = queue.pop_front() {
-        visited += 1;
-        if let Some(succs) = successors.get(node) {
-            for &succ in succs.iter() {
-                if let Some(count) = in_deg.get_mut(succ) {
-                    *count = count.saturating_sub(1);
-                    if *count == 0 {
-                        queue.push_back(succ);
-                    }
-                }
-            }
-        }
-    }
-
-    if visited == expected {
-        Ok(())
-    } else {
-        Err(DagError::CyclicDag)
-    }
-}
-
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -493,12 +447,18 @@ mod tests {
         MetaConfig, QecConfig, TimingConfig,
     };
     use pirx_hw::{CodeType, RoutingConfig};
+    use pirx_ir::ValidatedCircuit;
     use pirx_ir::circuit::{
-        CircuitMetadata, Dependency, OpKind as IrOpKind, Operation, ProfilerCircuit,
+        CircuitMetadata, ConditionalActivation, Dependency, MeasurementHook, MeasurementOutcome,
+        OpKind as IrOpKind, Operation, ProfilerCircuit,
     };
     use smallvec::smallvec;
 
     use super::*;
+
+    fn validated(circuit: ProfilerCircuit) -> ValidatedCircuit {
+        pirx_ir::validate::validate(circuit).expect("test fixture must be valid")
+    }
 
     // ── Fixtures ────────────────────────────────────────────────────────────
 
@@ -579,57 +539,9 @@ mod tests {
     // ── Construction ────────────────────────────────────────────────────────
 
     #[test]
-    fn from_circuit_empty_rejected() {
-        let hw = minimal_hw();
-        let circuit = ProfilerCircuit {
-            ops: vec![],
-            deps: vec![],
-            qubit_count: 0,
-            qubit_positions: None,
-            hooks: vec![],
-            metadata: meta(),
-        };
-        assert!(matches!(
-            Dag::from_circuit(&circuit, &hw).map(|(d, _)| d),
-            Err(DagError::EmptyCircuit)
-        ));
-    }
-
-    #[test]
-    fn from_circuit_cycle_rejected() {
-        let hw = minimal_hw();
-        // A(0) → B(1) → A(0) — cycle bypasses pirx-ir validation intentionally.
-        let circuit = ProfilerCircuit {
-            ops: vec![
-                Operation {
-                    id: 0,
-                    kind: IrOpKind::Clifford,
-                    qubits: smallvec![0],
-                    initially_active: true,
-                },
-                Operation {
-                    id: 1,
-                    kind: IrOpKind::Clifford,
-                    qubits: smallvec![0],
-                    initially_active: true,
-                },
-            ],
-            deps: vec![Dependency { from: 0, to: 1 }, Dependency { from: 1, to: 0 }],
-            qubit_count: 1,
-            qubit_positions: None,
-            hooks: vec![],
-            metadata: meta(),
-        };
-        assert!(matches!(
-            Dag::from_circuit(&circuit, &hw).map(|(d, _)| d),
-            Err(DagError::CyclicDag)
-        ));
-    }
-
-    #[test]
     fn from_circuit_simple_chain() {
         let hw = minimal_hw();
-        let (dag, _) = Dag::from_circuit(&chain_circuit(2), &hw).expect("valid chain");
+        let dag = Dag::from_circuit(&validated(chain_circuit(2)), &hw).expect("valid chain").dag;
         assert_eq!(dag.op_count(), 2);
         let roots = dag.initial_ready_set();
         assert_eq!(roots.len(), 1);
@@ -674,8 +586,8 @@ mod tests {
             hooks: vec![],
             metadata: meta(),
         };
-        let dag = Dag::from_circuit(&circuit, &hw)
-            .map(|(d, _)| d)
+        let dag = Dag::from_circuit(&validated(circuit), &hw)
+            .map(|b| b.dag)
             .expect("valid");
         let roots = dag.initial_ready_set();
         assert_eq!(roots.len(), 2);
@@ -715,8 +627,8 @@ mod tests {
             hooks: vec![],
             metadata: meta(),
         };
-        let dag = Dag::from_circuit(&circuit, &hw)
-            .map(|(d, _)| d)
+        let dag = Dag::from_circuit(&validated(circuit), &hw)
+            .map(|b| b.dag)
             .expect("valid");
         assert_eq!(dag.initial_ready_set().len(), 3);
     }
@@ -727,7 +639,7 @@ mod tests {
     fn release_successors_decrements() {
         let hw = minimal_hw();
         // A → B → C
-        let (mut dag, _) = Dag::from_circuit(&chain_circuit(3), &hw).expect("valid");
+        let mut dag = Dag::from_circuit(&validated(chain_circuit(3)), &hw).expect("valid").dag;
         let roots = dag.initial_ready_set();
         assert_eq!(roots.len(), 1);
         let key_a = roots[0];
@@ -756,7 +668,7 @@ mod tests {
     fn inject_fixup_rewires() {
         let hw = minimal_hw();
         // A(0) → B(1) → C(2)
-        let (mut dag, _) = Dag::from_circuit(&chain_circuit(3), &hw).expect("valid");
+        let mut dag = Dag::from_circuit(&validated(chain_circuit(3)), &hw).expect("valid").dag;
 
         let key_a = dag.initial_ready_set()[0];
         let key_b = dag
@@ -813,7 +725,7 @@ mod tests {
     #[test]
     fn inject_fixup_sets_active_true() {
         let hw = minimal_hw();
-        let (mut dag, _) = Dag::from_circuit(&chain_circuit(2), &hw).expect("valid");
+        let mut dag = Dag::from_circuit(&validated(chain_circuit(2)), &hw).expect("valid").dag;
         let key_a = dag.initial_ready_set()[0];
         let mut queue = FifoReadyQueue::new();
         let key_f = dag.inject_fixup(key_a, &mut queue);
@@ -832,7 +744,7 @@ mod tests {
             ops: vec![
                 Operation {
                     id: 0,
-                    kind: IrOpKind::Clifford,
+                    kind: IrOpKind::Measurement { hook: Some(0) },
                     qubits: smallvec![0],
                     initially_active: true,
                 },
@@ -846,11 +758,17 @@ mod tests {
             deps: vec![],
             qubit_count: 1,
             qubit_positions: None,
-            hooks: vec![],
+            hooks: vec![MeasurementHook {
+                id: 0,
+                activations: vec![ConditionalActivation {
+                    outcome: MeasurementOutcome::One,
+                    ops_to_activate: vec![1],
+                }],
+            }],
             metadata: meta(),
         };
-        let dag = Dag::from_circuit(&circuit, &hw)
-            .map(|(d, _)| d)
+        let dag = Dag::from_circuit(&validated(circuit), &hw)
+            .map(|b| b.dag)
             .expect("valid");
         let ready = dag.initial_ready_set();
         assert_eq!(
@@ -868,7 +786,7 @@ mod tests {
             ops: vec![
                 Operation {
                     id: 0,
-                    kind: IrOpKind::Clifford,
+                    kind: IrOpKind::Measurement { hook: Some(0) },
                     qubits: smallvec![0],
                     initially_active: true,
                 },
@@ -882,11 +800,17 @@ mod tests {
             deps: vec![Dependency { from: 0, to: 1 }],
             qubit_count: 1,
             qubit_positions: None,
-            hooks: vec![],
+            hooks: vec![MeasurementHook {
+                id: 0,
+                activations: vec![ConditionalActivation {
+                    outcome: MeasurementOutcome::One,
+                    ops_to_activate: vec![1],
+                }],
+            }],
             metadata: meta(),
         };
-        let mut dag = Dag::from_circuit(&circuit, &hw)
-            .map(|(d, _)| d)
+        let mut dag = Dag::from_circuit(&validated(circuit), &hw)
+            .map(|b| b.dag)
             .expect("valid");
         let key_a = dag.initial_ready_set()[0];
         let mut queue = FifoReadyQueue::new();
@@ -903,7 +827,7 @@ mod tests {
             ops: vec![
                 Operation {
                     id: 0,
-                    kind: IrOpKind::Clifford,
+                    kind: IrOpKind::Measurement { hook: Some(0) },
                     qubits: smallvec![0],
                     initially_active: true,
                 },
@@ -917,11 +841,17 @@ mod tests {
             deps: vec![Dependency { from: 0, to: 1 }],
             qubit_count: 1,
             qubit_positions: None,
-            hooks: vec![],
+            hooks: vec![MeasurementHook {
+                id: 0,
+                activations: vec![ConditionalActivation {
+                    outcome: MeasurementOutcome::One,
+                    ops_to_activate: vec![1],
+                }],
+            }],
             metadata: meta(),
         };
-        let mut dag = Dag::from_circuit(&circuit, &hw)
-            .map(|(d, _)| d)
+        let mut dag = Dag::from_circuit(&validated(circuit), &hw)
+            .map(|b| b.dag)
             .expect("valid");
 
         // Find key_b (the inactive op).
@@ -956,7 +886,7 @@ mod tests {
             ops: vec![
                 Operation {
                     id: 0,
-                    kind: IrOpKind::Clifford,
+                    kind: IrOpKind::Measurement { hook: Some(0) },
                     qubits: smallvec![0],
                     initially_active: true,
                 },
@@ -970,11 +900,17 @@ mod tests {
             deps: vec![Dependency { from: 0, to: 1 }],
             qubit_count: 1,
             qubit_positions: None,
-            hooks: vec![],
+            hooks: vec![MeasurementHook {
+                id: 0,
+                activations: vec![ConditionalActivation {
+                    outcome: MeasurementOutcome::One,
+                    ops_to_activate: vec![1],
+                }],
+            }],
             metadata: meta(),
         };
-        let mut dag = Dag::from_circuit(&circuit, &hw)
-            .map(|(d, _)| d)
+        let mut dag = Dag::from_circuit(&validated(circuit), &hw)
+            .map(|b| b.dag)
             .expect("valid");
         let key_a = dag.initial_ready_set()[0];
         let key_b = dag

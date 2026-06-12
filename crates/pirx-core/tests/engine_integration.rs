@@ -21,6 +21,7 @@ use pirx_hw::{
         MetaConfig, QecConfig, TimingConfig, load,
     },
 };
+use pirx_ir::ValidatedCircuit;
 use pirx_ir::circuit::MeasurementOutcome;
 use pirx_ir::circuit::{CircuitMetadata, Dependency, OpKind, Operation, ProfilerCircuit};
 use smallvec::smallvec;
@@ -213,6 +214,10 @@ fn circuit_three_cliffords() -> ProfilerCircuit {
     }
 }
 
+fn validated(circuit: ProfilerCircuit) -> ValidatedCircuit {
+    pirx_ir::validate::validate(circuit).expect("test fixture must be valid")
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 /// 1. Single Clifford, no dependencies.
@@ -222,7 +227,7 @@ fn circuit_three_cliffords() -> ProfilerCircuit {
 #[test]
 fn single_clifford() {
     let trace = Engine::new(
-        &circuit_clifford(),
+        &validated(circuit_clifford()),
         &cultivation_hw(),
         EngineConfig { seed: 0 },
     )
@@ -262,7 +267,7 @@ fn single_t_gate_served_immediately() {
     let mut hw = cultivation_hw();
     hw.buffer.preload = 1;
 
-    let trace = Engine::new(&circuit_t_gate(), &hw, EngineConfig { seed: 0 })
+    let trace = Engine::new(&validated(circuit_t_gate()), &hw, EngineConfig { seed: 0 })
         .unwrap()
         .run();
 
@@ -288,7 +293,7 @@ fn single_t_gate_served_immediately() {
 fn t_gate_stalls_then_served() {
     let hw = minimal_distillation_hw(1, 1, 0);
 
-    let trace = Engine::new(&circuit_two_t_gates(), &hw, EngineConfig { seed: 0 })
+    let trace = Engine::new(&validated(circuit_two_t_gates()), &hw, EngineConfig { seed: 0 })
         .unwrap()
         .run();
 
@@ -320,7 +325,7 @@ fn chain_respects_dependencies() {
     // Pre-load the buffer so the T-gate is served without waiting on factory timing.
     hw.buffer.preload = 1;
 
-    let trace = Engine::new(&circuit_chain(), &hw, EngineConfig { seed: 0 })
+    let trace = Engine::new(&validated(circuit_chain()), &hw, EngineConfig { seed: 0 })
         .unwrap()
         .run();
 
@@ -361,7 +366,7 @@ fn chain_respects_dependencies() {
 #[test]
 fn parallel_cliffords() {
     let trace = Engine::new(
-        &circuit_three_cliffords(),
+        &validated(circuit_three_cliffords()),
         &cultivation_hw(),
         EngineConfig { seed: 0 },
     )
@@ -400,7 +405,7 @@ fn parallel_cliffords() {
 /// 6. Determinism: identical seed + circuit + hardware → identical trace.
 #[test]
 fn determinism() {
-    let circuit = circuit_chain();
+    let circuit = validated(circuit_chain());
     let config = EngineConfig { seed: 42 };
 
     let t1 = Engine::new(&circuit, &cultivation_hw(), config)
@@ -432,7 +437,7 @@ fn determinism() {
 /// We scan the first 200 seeds to find a deterministic one that does.
 #[test]
 fn injection_fixup_extends_trace() {
-    let circuit = circuit_t_gate();
+    let circuit = validated(circuit_t_gate());
 
     let trace = (0u64..200)
         .find_map(|seed| {
@@ -484,7 +489,7 @@ fn injection_fixup_extends_trace() {
 /// adjust total_ops so the termination condition is reachable.
 #[test]
 fn hook_circuit_terminates() {
-    let circuit = pirx_testkit::measurement_with_one_hook();
+    let circuit = validated(pirx_testkit::measurement_with_one_hook());
     let mut hw = cultivation_hw();
     hw.injection.error_probability = 0.0;
 
@@ -513,7 +518,7 @@ fn hook_circuit_terminates() {
 /// branch activates (2 completions total: measurement + one branch op).
 #[test]
 fn hook_both_outcomes_covered() {
-    let circuit = pirx_testkit::measurement_with_both_outcomes();
+    let circuit = validated(pirx_testkit::measurement_with_both_outcomes());
     let mut hw = cultivation_hw();
     hw.injection.error_probability = 0.0;
 
@@ -571,7 +576,7 @@ fn hook_both_outcomes_covered() {
 /// may trigger injection error → fixup inserted and completed.
 #[test]
 fn hook_activates_t_gate_with_injection() {
-    let circuit = pirx_testkit::hook_activates_t_gate();
+    let circuit = validated(pirx_testkit::hook_activates_t_gate());
 
     // Find a seed where: outcome=One (T-gate activated) AND injection fires.
     let trace = (0u64..500)

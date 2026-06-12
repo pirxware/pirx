@@ -9,7 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ### Added
 
 - **pirx-ir**: Profiler IR circuit representation — operations, dependencies, qubit assignments, circuit metadata
-- **pirx-ir**: IR validation (Kahn's acyclicity check, duplicate op IDs, dangling dependencies, qubit range checks)
+- **pirx-ir**: IR validation (Kahn's acyclicity check, duplicate op IDs, dangling dependencies, qubit range checks) returning `ValidatedCircuit` proof token
 - **pirx-ir**: Measurement hooks and conditional activation for adaptive circuits (repeat-until-success, feedforward branching)
 - **pirx-ir**: Grid positions for distance-aware routing models
 - **pirx-ir**: Rotation operations (`OpKind::Rotation`) with f64 angle
@@ -25,7 +25,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **pirx-hw**: Comprehensive domain validation (code distance parity, probability ranges, positive rates)
 - **pirx-hw**: Two reference hardware models: `surface_code_d17_cultivation.toml`, `surface_code_d17_distillation.toml`
 - **pirx-core**: Discrete-event simulation engine with DAG-based dependency scheduling
-- **pirx-core**: DAG construction from IR with rotation-angle deduplication (u16 index, max 65535 distinct angles)
+- **pirx-core**: DAG construction from `ValidatedCircuit` with rotation-angle deduplication (u16 index, max 65535 distinct angles)
 - **pirx-core**: Injection error model — stochastic injection failures insert fixup nodes into the DAG at runtime
 - **pirx-core**: Magic state buffer (fixed-capacity, enqueue/dequeue, cold and warm start)
 - **pirx-core**: Cultivation factory model (exponential service time scaled by code distance)

@@ -77,19 +77,12 @@ pub enum TraceEventKind {
     // Measurement hooks
     MeasurementOutcome {
         gate: u64,
-        outcome: MeasurementOutcomeValue,
+        outcome: pirx_ir::circuit::MeasurementOutcome,
     },
     OpsActivated {
         gate: u64,
         activated_count: u32,
     },
-}
-
-/// Measurement outcome for trace events.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum MeasurementOutcomeValue {
-    Zero,
-    One,
 }
 
 /// Complete execution trace — the primary output of the engine.

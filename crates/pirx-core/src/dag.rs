@@ -5,7 +5,7 @@
 //! in the Engine, not here. Mutation is exposed only via
 //! [`Dag::release_successors`] and [`Dag::inject_fixup`].
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 use pirx_hw::model::HardwareModel;
 use pirx_ir::circuit::{MeasurementHookId, OpId, OpKind as IrOpKind, ProfilerCircuit, QubitId};
@@ -190,7 +190,7 @@ impl Dag {
     pub fn from_circuit(
         circuit: &ProfilerCircuit,
         hw: &HardwareModel,
-    ) -> Result<(Self, std::collections::HashMap<OpId, OpKey>), DagError> {
+    ) -> Result<(Self, HashMap<OpId, OpKey>), DagError> {
         if circuit.ops.is_empty() {
             return Err(DagError::EmptyCircuit);
         }
@@ -205,8 +205,7 @@ impl Dag {
         let mut angle_table: Vec<f64> = Vec::new();
 
         // Map IR OpId → arena OpKey for building adjacency.
-        let mut id_to_key: std::collections::HashMap<OpId, OpKey> =
-            std::collections::HashMap::with_capacity(n);
+        let mut id_to_key: HashMap<OpId, OpKey> = HashMap::with_capacity(n);
 
         for op in &circuit.ops {
             let kind = ir_kind_to_engine(&op.kind, &mut angle_table)?;

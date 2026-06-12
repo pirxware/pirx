@@ -192,6 +192,22 @@ proptest! {
         prop_assert!(completed >= 2, "expected >= 2 completions, got {completed}");
     }
 
+    /// Same circuit + same hardware + same seed = identical trace for hook circuits.
+    ///
+    /// Hook dispatch introduces a new RNG call (outcome sampling). Determinism
+    /// must hold for circuits with hooks, not just plain gate circuits.
+    #[test]
+    fn hook_determinism(seed in 0u64..10_000) {
+        let circuit = pirx_testkit::measurement_with_both_outcomes();
+        let hw = pirx_testkit::cultivation_hw();
+        let config = EngineConfig { seed };
+
+        let t1 = Engine::new(&circuit, &hw, config).unwrap().run();
+        let t2 = Engine::new(&circuit, &hw, config).unwrap().run();
+
+        prop_assert_eq!(t1, t2);
+    }
+
     /// Completed ops == initially active ops + activated ops + fixups.
     ///
     /// For circuits with hooks, the engine must account for all three sources

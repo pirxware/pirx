@@ -183,11 +183,16 @@ impl ProfileAnalyzer {
                     }
                 }
 
-                // GateReady, GateScheduled, GateStalled, GateCompleted (wait=0 case
-                // of GateServed), BufferFull, RoutingStarted, RoutingCompleted,
-                // MeasurementOutcome, OpsActivated — no additional metric
-                // contribution beyond what is already accumulated.
-                _ => {}
+                TraceEventKind::GateReady { .. }
+                | TraceEventKind::GateScheduled { .. }
+                | TraceEventKind::GateStalled { .. }
+                | TraceEventKind::GateServed { .. }
+                | TraceEventKind::GateCompleted { .. }
+                | TraceEventKind::BufferFull
+                | TraceEventKind::RoutingStarted { .. }
+                | TraceEventKind::RoutingCompleted { .. }
+                | TraceEventKind::MeasurementOutcome { .. }
+                | TraceEventKind::OpsActivated { .. } => {}
             }
         }
 

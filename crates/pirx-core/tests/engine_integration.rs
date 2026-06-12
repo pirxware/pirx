@@ -12,7 +12,7 @@
 
 use pirx_core::{
     engine::{Engine, EngineConfig},
-    trace::{MeasurementOutcomeValue, TraceEventKind},
+    trace::TraceEventKind,
 };
 use pirx_hw::{
     CodeType, RoutingConfig,
@@ -21,6 +21,7 @@ use pirx_hw::{
         MetaConfig, QecConfig, TimingConfig, load,
     },
 };
+use pirx_ir::circuit::MeasurementOutcome;
 use pirx_ir::circuit::{CircuitMetadata, Dependency, OpKind, Operation, ProfilerCircuit};
 use smallvec::smallvec;
 
@@ -540,8 +541,8 @@ fn hook_both_outcomes_covered() {
         );
 
         match outcomes[0] {
-            MeasurementOutcomeValue::Zero => saw_zero = true,
-            MeasurementOutcomeValue::One => saw_one = true,
+            MeasurementOutcome::Zero => saw_zero = true,
+            MeasurementOutcome::One => saw_one = true,
         }
 
         // Exactly 2 completions: measurement + one activated branch.

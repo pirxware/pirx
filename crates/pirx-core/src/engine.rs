@@ -9,9 +9,12 @@ use std::collections::{HashMap, VecDeque};
 
 use pirx_hw::RoutingConfig;
 use pirx_hw::model::HardwareModel;
-use pirx_ir::circuit::{GridPosition, MeasurementHookId, MeasurementOutcome, ProfilerCircuit};
+use pirx_ir::circuit::{
+    GridPosition, MeasurementHookId, MeasurementOutcome, OpId, ProfilerCircuit,
+};
 use rand::{Rng as _, SeedableRng, rngs::StdRng};
 use slotmap::{Key as _, SecondaryMap};
+use smallvec::SmallVec;
 use thiserror::Error;
 
 use crate::buffer::MagicStateBuffer;
@@ -19,7 +22,7 @@ use crate::dag::{Dag, DagError, FifoReadyQueue, OpKey, OpKind, ReadyQueue};
 use crate::events::{EngineEvent, EventQueue, TimedEvent};
 use crate::factory::{FactoryError, FactoryModel, FactoryOutcome, create_factories};
 use crate::routing;
-use crate::trace::{MeasurementOutcomeValue, Trace, TraceCollector, TraceEventKind};
+use crate::trace::{Trace, TraceCollector, TraceEventKind};
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -61,6 +64,12 @@ pub enum EngineError {
 
     #[error("manhattan routing requires qubit_positions in circuit")]
     MissingQubitPositions,
+
+    #[error("measurement hook {hook_id} references non-existent op {op_id}")]
+    DanglingHookTarget {
+        hook_id: MeasurementHookId,
+        op_id: OpId,
+    },
 }
 
 impl From<DagError> for EngineError {
@@ -76,11 +85,14 @@ impl From<DagError> for EngineError {
 
 // ── Hook dispatch ────────────────────────────────────────────────────────────
 
-/// Key into the pre-resolved hook dispatch table.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct HookKey {
-    hook_id: MeasurementHookId,
-    outcome: MeasurementOutcome,
+/// Index into [`Engine::hook_table`] for a (hook_id, outcome) pair.
+/// Layout: `hook_id * 2 + outcome_ordinal`. Zero and One map to 0 and 1.
+fn hook_table_index(hook_id: MeasurementHookId, outcome: MeasurementOutcome) -> usize {
+    let ordinal = match outcome {
+        MeasurementOutcome::Zero => 0,
+        MeasurementOutcome::One => 1,
+    };
+    (hook_id as usize).saturating_mul(2).saturating_add(ordinal)
 }
 
 // ── Engine ────────────────────────────────────────────────────────────────────
@@ -116,10 +128,10 @@ pub struct Engine {
     /// Cycle at which each gate entered the stall queue, for wait-time accounting.
     stall_start: HashMap<OpKey, u64>,
 
-    // Measurement hook dispatch (pre-resolved at construction)
-    hook_map: HashMap<HookKey, Vec<OpKey>>,
-    /// Tracks which ops have completed, needed by dag.activate_ops() to
-    /// recompute effective predecessor counts on activation.
+    // Measurement hook dispatch — flat table indexed by hook_id * 2 + outcome.
+    // Pre-resolved at construction so the hot loop does a single Vec::get.
+    hook_table: Vec<SmallVec<[OpKey; 2]>>,
+    /// Tracks completed ops for dag.activate_ops() predecessor recomputation.
     completed_set: SecondaryMap<OpKey, ()>,
 
     // Termination tracking (total_ops grows when fixups are injected or hooks activate)
@@ -188,22 +200,32 @@ impl Engine {
             .saturating_add(factory_count.saturating_mul(3));
         let mut trace = TraceCollector::new(capacity_hint);
 
-        // Build hook dispatch map: (hook_id, outcome) → resolved OpKey targets.
-        // Pre-flattened so the hot loop does a single HashMap::get, zero allocation.
-        let mut hook_map: HashMap<HookKey, Vec<OpKey>> =
-            HashMap::with_capacity(circuit.hooks.len().saturating_mul(2));
+        // Build hook dispatch table: flat Vec indexed by hook_id * 2 + outcome.
+        // Pre-resolved so the hot loop does a single Vec::get, zero allocation.
+        let table_len = circuit
+            .hooks
+            .iter()
+            .map(|h| (h.id as usize).saturating_add(1))
+            .max()
+            .unwrap_or(0)
+            .saturating_mul(2);
+        let mut hook_table: Vec<SmallVec<[OpKey; 2]>> = vec![SmallVec::new(); table_len];
         for hook in &circuit.hooks {
-            for ca in &hook.activations {
-                let op_keys: Vec<OpKey> = ca
-                    .ops_to_activate
-                    .iter()
-                    .filter_map(|id| id_to_key.get(id).copied())
-                    .collect();
-                let key = HookKey {
-                    hook_id: hook.id,
-                    outcome: ca.outcome,
-                };
-                hook_map.insert(key, op_keys);
+            for activation in &hook.activations {
+                let mut op_keys = SmallVec::<[OpKey; 2]>::new();
+                for &op_id in &activation.ops_to_activate {
+                    let &key = id_to_key
+                        .get(&op_id)
+                        .ok_or(EngineError::DanglingHookTarget {
+                            hook_id: hook.id,
+                            op_id,
+                        })?;
+                    op_keys.push(key);
+                }
+                let idx = hook_table_index(hook.id, activation.outcome);
+                if let Some(slot) = hook_table.get_mut(idx) {
+                    *slot = op_keys;
+                }
             }
         }
 
@@ -241,8 +263,10 @@ impl Engine {
             seed: config.seed,
             stalled_gates: VecDeque::new(),
             stall_start: HashMap::new(),
-            hook_map,
-            completed_set: SecondaryMap::with_capacity(n_ops),
+            hook_table,
+            completed_set: SecondaryMap::with_capacity(
+                n_ops.saturating_add(n_ops / 2).saturating_add(16),
+            ),
             total_ops,
             completed_ops: 0,
             trace,
@@ -331,7 +355,7 @@ impl Engine {
                     );
                 }
                 self.completed_ops += 1;
-                if !self.hook_map.is_empty() {
+                if !self.hook_table.is_empty() {
                     self.completed_set.insert(gate, ());
                 }
                 self.complete_gate(gate);
@@ -396,24 +420,18 @@ impl Engine {
             MeasurementOutcome::Zero
         };
 
-        let outcome_trace = match outcome {
-            MeasurementOutcome::Zero => MeasurementOutcomeValue::Zero,
-            MeasurementOutcome::One => MeasurementOutcomeValue::One,
-        };
-
         self.trace.record(
             self.current_cycle,
             TraceEventKind::MeasurementOutcome {
                 gate: gate_raw,
-                outcome: outcome_trace,
+                outcome,
             },
         );
 
-        let key = HookKey { hook_id, outcome };
-        let Some(to_activate) = self.hook_map.get(&key) else {
+        let idx = hook_table_index(hook_id, outcome);
+        let Some(to_activate) = self.hook_table.get(idx) else {
             return;
         };
-
         if to_activate.is_empty() {
             return;
         }
@@ -427,7 +445,6 @@ impl Engine {
 
         #[allow(clippy::cast_possible_truncation)]
         let activated_count = to_activate.len() as u32;
-
         self.total_ops += u64::from(activated_count);
 
         self.trace.record(

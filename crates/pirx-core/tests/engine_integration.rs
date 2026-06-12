@@ -12,7 +12,7 @@
 
 use pirx_core::{
     engine::{Engine, EngineConfig},
-    trace::TraceEventKind,
+    trace::{SYNTHETIC_ID_FLAG, TraceEventKind},
 };
 use pirx_hw::{
     CodeType, RoutingConfig,
@@ -766,4 +766,203 @@ fn hook_activates_t_gate_with_injection() {
             .any(|e| matches!(e.kind, TraceEventKind::FixupCompleted { .. })),
         "FixupCompleted must appear after fixup executes"
     );
+}
+
+// ── Trace ID correlation tests ──────────────────────────────────────────────
+
+/// 14. GateCompleted events carry the original IR OpIds, not slotmap-internal keys.
+///
+/// Build a circuit with known OpIds (100, 200, 300). Every GateCompleted
+/// event must carry one of those exact values.
+#[test]
+fn trace_ids_match_circuit_op_ids() {
+    let circuit = validated(ProfilerCircuit {
+        ops: vec![
+            Operation {
+                id: 100,
+                kind: OpKind::Clifford,
+                qubits: smallvec![0],
+                initially_active: true,
+            },
+            Operation {
+                id: 200,
+                kind: OpKind::Clifford,
+                qubits: smallvec![1],
+                initially_active: true,
+            },
+            Operation {
+                id: 300,
+                kind: OpKind::Clifford,
+                qubits: smallvec![2],
+                initially_active: true,
+            },
+        ],
+        deps: vec![],
+        qubit_count: 3,
+        qubit_positions: None,
+        hooks: vec![],
+        metadata: blank_meta("known-ids"),
+    });
+
+    let mut hw = cultivation_hw();
+    hw.injection.error_probability = 0.0;
+
+    let trace = Engine::new(
+        &circuit,
+        &hw,
+        EngineConfig {
+            seed: 0,
+            max_cycles: None,
+        },
+    )
+    .unwrap()
+    .run();
+
+    let expected_ids: std::collections::HashSet<u64> = [100, 200, 300].into_iter().collect();
+
+    let completed_ids: Vec<u64> = trace
+        .events
+        .iter()
+        .filter_map(|e| match e.kind {
+            TraceEventKind::GateCompleted { gate } => Some(gate),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(
+        completed_ids.len(),
+        3,
+        "exactly 3 GateCompleted events expected"
+    );
+    for id in &completed_ids {
+        assert!(
+            expected_ids.contains(id),
+            "GateCompleted carried id={id}, expected one of {expected_ids:?}"
+        );
+    }
+}
+
+/// 15. Fixup nodes carry synthetic IDs with SYNTHETIC_ID_FLAG set.
+///
+/// Run with error_probability=1.0 so every T-gate triggers injection.
+/// FixupInserted.fixup must have bit 63 set, and .original must not.
+#[test]
+fn fixup_ids_have_synthetic_flag() {
+    let circuit = validated(ProfilerCircuit {
+        ops: vec![Operation {
+            id: 42,
+            kind: OpKind::TGate,
+            qubits: smallvec![0],
+            initially_active: true,
+        }],
+        deps: vec![],
+        qubit_count: 1,
+        qubit_positions: None,
+        hooks: vec![],
+        metadata: blank_meta("fixup-flag"),
+    });
+
+    let mut hw = cultivation_hw();
+    hw.injection.error_probability = 1.0;
+    hw.buffer.preload = 4;
+
+    let trace = Engine::new(
+        &circuit,
+        &hw,
+        EngineConfig {
+            seed: 0,
+            max_cycles: Some(10_000),
+        },
+    )
+    .unwrap()
+    .run();
+
+    let fixup_events: Vec<_> = trace
+        .events
+        .iter()
+        .filter_map(|e| match e.kind {
+            TraceEventKind::FixupInserted { fixup, original } => Some((fixup, original)),
+            _ => None,
+        })
+        .collect();
+
+    assert!(
+        !fixup_events.is_empty(),
+        "error_probability=1.0 must produce at least one FixupInserted"
+    );
+
+    for (fixup, original) in &fixup_events {
+        assert!(
+            fixup & SYNTHETIC_ID_FLAG != 0,
+            "fixup ID {fixup:#x} must have SYNTHETIC_ID_FLAG set"
+        );
+        assert!(
+            original & SYNTHETIC_ID_FLAG == 0,
+            "original ID {original:#x} must NOT have SYNTHETIC_ID_FLAG set"
+        );
+    }
+}
+
+/// 16. All gate lifecycle events (Ready, Scheduled, Completed) carry consistent IDs.
+///
+/// For a single Clifford with a known OpId, the same ID must appear across
+/// all lifecycle events for that gate.
+#[test]
+fn gate_lifecycle_ids_consistent() {
+    let circuit = validated(ProfilerCircuit {
+        ops: vec![Operation {
+            id: 777,
+            kind: OpKind::Clifford,
+            qubits: smallvec![0],
+            initially_active: true,
+        }],
+        deps: vec![],
+        qubit_count: 1,
+        qubit_positions: None,
+        hooks: vec![],
+        metadata: blank_meta("lifecycle-ids"),
+    });
+
+    let mut hw = cultivation_hw();
+    hw.injection.error_probability = 0.0;
+
+    let trace = Engine::new(
+        &circuit,
+        &hw,
+        EngineConfig {
+            seed: 0,
+            max_cycles: None,
+        },
+    )
+    .unwrap()
+    .run();
+
+    let ready_ids: Vec<u64> = trace
+        .events
+        .iter()
+        .filter_map(|e| match e.kind {
+            TraceEventKind::GateReady { gate } => Some(gate),
+            _ => None,
+        })
+        .collect();
+    let scheduled_ids: Vec<u64> = trace
+        .events
+        .iter()
+        .filter_map(|e| match e.kind {
+            TraceEventKind::GateScheduled { gate } => Some(gate),
+            _ => None,
+        })
+        .collect();
+    let completed_ids: Vec<u64> = trace
+        .events
+        .iter()
+        .filter_map(|e| match e.kind {
+            TraceEventKind::GateCompleted { gate } => Some(gate),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(ready_ids, [777], "GateReady must carry OpId 777");
+    assert_eq!(scheduled_ids, [777], "GateScheduled must carry OpId 777");
+    assert_eq!(completed_ids, [777], "GateCompleted must carry OpId 777");
 }

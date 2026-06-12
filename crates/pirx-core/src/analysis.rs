@@ -34,7 +34,9 @@ pub enum BottleneckType {
 pub struct StallRecord {
     /// Cycle at which the gate was finally served.
     pub cycle: u64,
-    /// Raw gate identifier (matches [`pirx_ir::circuit::OpId`]).
+    /// Operation identifier from the execution trace.
+    /// Original operations: matches `OpId` from the IR circuit.
+    /// Fixup nodes: synthetic ID with bit 63 set ([`SYNTHETIC_ID_FLAG`](crate::trace::SYNTHETIC_ID_FLAG)).
     pub gate_id: u64,
     /// Cycles the gate spent waiting for a magic state.
     pub wait_cycles: u64,

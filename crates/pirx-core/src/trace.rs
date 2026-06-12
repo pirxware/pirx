@@ -5,6 +5,14 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Bit flag for synthetic (fixup) operation IDs in trace events.
+///
+/// Original circuit operations carry their IR `OpId` directly.
+/// Fixup nodes injected by the engine carry `SYNTHETIC_ID_FLAG | counter`.
+/// [`TraceEventKind::FixupInserted`] links the two: `original` is the IR OpId,
+/// `fixup` is the synthetic ID.
+pub const SYNTHETIC_ID_FLAG: u64 = 1 << 63;
+
 /// A single timestamped event in the execution trace.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TraceEvent {

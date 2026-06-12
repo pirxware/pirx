@@ -12,7 +12,7 @@ use pirx_hw::model::HardwareModel;
 use pirx_ir::ValidatedCircuit;
 use pirx_ir::circuit::{GridPosition, MeasurementHookId, MeasurementOutcome, OpId};
 use rand::{Rng as _, SeedableRng, rngs::StdRng};
-use slotmap::{Key as _, SecondaryMap};
+use slotmap::SecondaryMap;
 use smallvec::SmallVec;
 use thiserror::Error;
 
@@ -21,7 +21,7 @@ use crate::dag::{Dag, DagBuild, DagError, FifoReadyQueue, OpKey, OpKind, ReadyQu
 use crate::events::{EngineEvent, EventQueue, TimedEvent};
 use crate::factory::{FactoryError, FactoryModel, FactoryOutcome, create_factories};
 use crate::routing;
-use crate::trace::{Trace, TraceCollector, TraceEventKind};
+use crate::trace::{SYNTHETIC_ID_FLAG, Trace, TraceCollector, TraceEventKind};
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -133,6 +133,10 @@ pub struct Engine {
     total_ops: u64,
     completed_ops: u64,
 
+    // Stable trace IDs: maps arena keys → IR OpId (or synthetic fixup ID).
+    key_to_op_id: SecondaryMap<OpKey, u64>,
+    next_synthetic_id: u64,
+
     // Trace collection (append-only, pre-allocated)
     trace: TraceCollector,
 }
@@ -163,6 +167,12 @@ impl Engine {
         let DagBuild { dag, id_to_key } = Dag::from_circuit(circuit, hw)?;
         // Only count initially active ops; inactive ops enter via hook activation.
         let total_ops = dag.active_op_count() as u64;
+
+        // Reverse map: arena key → IR OpId for stable trace event IDs.
+        let mut key_to_op_id = SecondaryMap::with_capacity(n_ops.saturating_add(n_ops / 2));
+        for (&op_id, &key) in &id_to_key {
+            key_to_op_id.insert(key, op_id);
+        }
 
         // Validate routing compatibility.
         if matches!(hw.routing, RoutingConfig::Manhattan { .. })
@@ -263,6 +273,8 @@ impl Engine {
             completed_set: SecondaryMap::with_capacity(
                 n_ops.saturating_add(n_ops / 2).saturating_add(16),
             ),
+            key_to_op_id,
+            next_synthetic_id: 0,
             total_ops,
             completed_ops: 0,
             trace,
@@ -321,6 +333,16 @@ impl Engine {
         self.completed_ops >= self.total_ops
     }
 
+    // ── Trace ID resolution ──────────────────────────────────────────────────
+
+    /// Resolve an arena key to a stable trace ID.
+    ///
+    /// Original ops → IR `OpId`. Fixup nodes → `SYNTHETIC_ID_FLAG | counter`.
+    #[inline]
+    fn trace_id(&self, key: OpKey) -> u64 {
+        self.key_to_op_id.get(key).copied().unwrap_or(0)
+    }
+
     // ── Event processing ─────────────────────────────────────────────────────
 
     fn process_event(&mut self, event: TimedEvent) {
@@ -346,17 +368,17 @@ impl Engine {
                 self.start_factory(factory_id, event.cycle);
             }
             EngineEvent::GateCompleted { gate } => {
-                let gate_raw = gate.data().as_ffi();
+                let gate_id = self.trace_id(gate);
                 // Distinguish fixup completions from regular gate completions.
                 if self.dag.get(gate).map(|op| op.kind) == Some(OpKind::Fixup) {
                     self.trace.record(
                         event.cycle,
-                        TraceEventKind::FixupCompleted { fixup: gate_raw },
+                        TraceEventKind::FixupCompleted { fixup: gate_id },
                     );
                 } else {
                     self.trace.record(
                         event.cycle,
-                        TraceEventKind::GateCompleted { gate: gate_raw },
+                        TraceEventKind::GateCompleted { gate: gate_id },
                     );
                 }
                 self.completed_ops += 1;
@@ -388,18 +410,20 @@ impl Engine {
         };
 
         if inject {
-            let gate_raw = gate.data().as_ffi();
+            let gate_id = self.trace_id(gate);
             self.trace.record(
                 self.current_cycle,
-                TraceEventKind::InjectionError { gate: gate_raw },
+                TraceEventKind::InjectionError { gate: gate_id },
             );
-            let fixup = self.dag.inject_fixup(gate, &mut *self.ready_set);
-            let fixup_raw = fixup.data().as_ffi();
+            let fixup_key = self.dag.inject_fixup(gate, &mut *self.ready_set);
+            let synthetic_id = SYNTHETIC_ID_FLAG | self.next_synthetic_id;
+            self.next_synthetic_id += 1;
+            self.key_to_op_id.insert(fixup_key, synthetic_id);
             self.trace.record(
                 self.current_cycle,
                 TraceEventKind::FixupInserted {
-                    fixup: fixup_raw,
-                    original: gate_raw,
+                    fixup: synthetic_id,
+                    original: gate_id,
                 },
             );
             // Fixup is now in ready_set. Count it so is_complete() stays correct.
@@ -417,7 +441,7 @@ impl Engine {
 
     /// Sample a measurement outcome and activate the corresponding ops.
     fn dispatch_hook(&mut self, gate: OpKey, hook_id: MeasurementHookId) {
-        let gate_raw = gate.data().as_ffi();
+        let gate_id = self.trace_id(gate);
 
         let outcome = if self.rng.r#gen::<bool>() {
             MeasurementOutcome::One
@@ -428,7 +452,7 @@ impl Engine {
         self.trace.record(
             self.current_cycle,
             TraceEventKind::MeasurementOutcome {
-                gate: gate_raw,
+                gate: gate_id,
                 outcome,
             },
         );
@@ -455,7 +479,7 @@ impl Engine {
         self.trace.record(
             self.current_cycle,
             TraceEventKind::OpsActivated {
-                gate: gate_raw,
+                gate: gate_id,
                 activated_count,
             },
         );
@@ -474,15 +498,15 @@ impl Engine {
         };
 
         if routing_cost > 0 {
-            let gate_raw = gate.data().as_ffi();
+            let gate_id = self.trace_id(gate);
             self.trace.record(
                 self.current_cycle,
-                TraceEventKind::RoutingStarted { gate: gate_raw },
+                TraceEventKind::RoutingStarted { gate: gate_id },
             );
             self.trace.record(
                 self.current_cycle,
                 TraceEventKind::RoutingCompleted {
-                    gate: gate_raw,
+                    gate: gate_id,
                     latency: routing_cost,
                 },
             );
@@ -497,10 +521,10 @@ impl Engine {
     /// are moved to `stalled_gates`. All other gate kinds are scheduled directly.
     fn schedule_ready_gates(&mut self) {
         while let Some(gate) = self.ready_set.pop() {
-            let gate_raw = gate.data().as_ffi();
+            let gate_id = self.trace_id(gate);
             self.trace.record(
                 self.current_cycle,
-                TraceEventKind::GateReady { gate: gate_raw },
+                TraceEventKind::GateReady { gate: gate_id },
             );
 
             let needs_magic_state = matches!(
@@ -519,7 +543,7 @@ impl Engine {
                     self.trace.record(
                         self.current_cycle,
                         TraceEventKind::GateServed {
-                            gate: gate_raw,
+                            gate: gate_id,
                             wait: 0,
                         },
                     );
@@ -527,7 +551,7 @@ impl Engine {
                 } else {
                     self.trace.record(
                         self.current_cycle,
-                        TraceEventKind::GateStalled { gate: gate_raw },
+                        TraceEventKind::GateStalled { gate: gate_id },
                     );
                     self.stalled_gates.push_back(gate);
                     self.stall_start.insert(gate, self.current_cycle);
@@ -535,7 +559,7 @@ impl Engine {
             } else {
                 self.trace.record(
                     self.current_cycle,
-                    TraceEventKind::GateScheduled { gate: gate_raw },
+                    TraceEventKind::GateScheduled { gate: gate_id },
                 );
                 self.schedule_gate_completion(gate);
             }
@@ -580,7 +604,7 @@ impl Engine {
             self.trace.record(
                 self.current_cycle,
                 TraceEventKind::GateServed {
-                    gate: gate.data().as_ffi(),
+                    gate: self.trace_id(gate),
                     wait,
                 },
             );

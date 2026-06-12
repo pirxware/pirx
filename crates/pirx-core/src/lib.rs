@@ -17,4 +17,4 @@ pub mod trace;
 // Re-export primary types for downstream ergonomics.
 pub use analysis::{BottleneckType, ExecutionProfile, ProfileAnalyzer, StallRecord};
 pub use engine::{Engine, EngineConfig, EngineError};
-pub use trace::{Trace, TraceEvent, TraceEventKind};
+pub use trace::{SYNTHETIC_ID_FLAG, Trace, TraceEvent, TraceEventKind};

@@ -184,8 +184,9 @@ impl ProfileAnalyzer {
                 }
 
                 // GateReady, GateScheduled, GateStalled, GateCompleted (wait=0 case
-                // of GateServed), BufferFull, RoutingStarted, RoutingCompleted — no
-                // additional metric contribution beyond what is already accumulated.
+                // of GateServed), BufferFull, RoutingStarted, RoutingCompleted,
+                // MeasurementOutcome, OpsActivated — no additional metric
+                // contribution beyond what is already accumulated.
                 _ => {}
             }
         }

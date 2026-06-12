@@ -12,7 +12,7 @@
 
 use pirx_core::{
     engine::{Engine, EngineConfig},
-    trace::TraceEventKind,
+    trace::{MeasurementOutcomeValue, TraceEventKind},
 };
 use pirx_hw::{
     CodeType, RoutingConfig,
@@ -471,5 +471,145 @@ fn injection_fixup_extends_trace() {
             .iter()
             .any(|e| matches!(e.kind, TraceEventKind::FixupCompleted { .. })),
         "FixupCompleted must appear after the fixup op executes"
+    );
+}
+
+// ── Hook tests ───────────────────────────────────────────────────────────────
+
+/// 8. Measurement hook circuit terminates for every seed.
+///
+/// This is the core deadlock fix: circuits with hooks must complete.
+/// The engine must activate inactive ops on measurement completion and
+/// adjust total_ops so the termination condition is reachable.
+#[test]
+fn hook_circuit_terminates() {
+    let circuit = pirx_testkit::measurement_with_one_hook();
+    let mut hw = cultivation_hw();
+    hw.injection.error_probability = 0.0;
+
+    for seed in 0u64..100 {
+        let trace = Engine::new(&circuit, &hw, EngineConfig { seed })
+            .unwrap()
+            .run();
+
+        assert!(
+            trace.total_cycles > 0,
+            "hook circuit must terminate (seed {seed})"
+        );
+        assert!(
+            trace
+                .events
+                .iter()
+                .any(|e| matches!(e.kind, TraceEventKind::GateCompleted { .. })),
+            "measurement must complete (seed {seed})"
+        );
+    }
+}
+
+/// 9. Both-outcomes hook: Zero activates op 1, One activates op 2.
+///
+/// Over enough seeds, both outcomes must appear. For each run, exactly one
+/// branch activates (2 completions total: measurement + one branch op).
+#[test]
+fn hook_both_outcomes_covered() {
+    let circuit = pirx_testkit::measurement_with_both_outcomes();
+    let mut hw = cultivation_hw();
+    hw.injection.error_probability = 0.0;
+
+    let mut saw_zero = false;
+    let mut saw_one = false;
+
+    for seed in 0u64..200 {
+        let trace = Engine::new(&circuit, &hw, EngineConfig { seed })
+            .unwrap()
+            .run();
+
+        let outcomes: Vec<_> = trace
+            .events
+            .iter()
+            .filter_map(|e| match &e.kind {
+                TraceEventKind::MeasurementOutcome { outcome, .. } => Some(*outcome),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(
+            outcomes.len(),
+            1,
+            "exactly one measurement outcome per run (seed {seed})"
+        );
+
+        match outcomes[0] {
+            MeasurementOutcomeValue::Zero => saw_zero = true,
+            MeasurementOutcomeValue::One => saw_one = true,
+        }
+
+        // Exactly 2 completions: measurement + one activated branch.
+        let completed = trace
+            .events
+            .iter()
+            .filter(|e| matches!(e.kind, TraceEventKind::GateCompleted { .. }))
+            .count();
+        assert_eq!(
+            completed, 2,
+            "measurement + exactly one branch must complete (seed {seed})"
+        );
+
+        if saw_zero && saw_one {
+            break;
+        }
+    }
+
+    assert!(saw_zero, "Zero outcome must appear in 200 seeds");
+    assert!(saw_one, "One outcome must appear in 200 seeds");
+}
+
+/// 10. Hook-activated T-gate can trigger injection error + fixup.
+///
+/// Verifies the interaction: measurement → hook activates T-gate → T-gate
+/// may trigger injection error → fixup inserted and completed.
+#[test]
+fn hook_activates_t_gate_with_injection() {
+    let circuit = pirx_testkit::hook_activates_t_gate();
+
+    // Find a seed where: outcome=One (T-gate activated) AND injection fires.
+    let trace = (0u64..500)
+        .find_map(|seed| {
+            let mut hw = cultivation_hw();
+            hw.buffer.preload = 1;
+            let t = Engine::new(&circuit, &hw, EngineConfig { seed })
+                .unwrap()
+                .run();
+
+            let has_activation = t
+                .events
+                .iter()
+                .any(|e| matches!(e.kind, TraceEventKind::OpsActivated { .. }));
+            let has_injection = t
+                .events
+                .iter()
+                .any(|e| matches!(e.kind, TraceEventKind::InjectionError { .. }));
+
+            if has_activation && has_injection {
+                Some(t)
+            } else {
+                None
+            }
+        })
+        .expect("at least one seed in 0..500 must trigger hook activation + injection");
+
+    assert!(
+        trace
+            .events
+            .iter()
+            .any(|e| matches!(e.kind, TraceEventKind::FixupInserted { .. })),
+        "FixupInserted must follow injection on hook-activated T-gate"
+    );
+    assert!(
+        trace
+            .events
+            .iter()
+            .any(|e| matches!(e.kind, TraceEventKind::FixupCompleted { .. })),
+        "FixupCompleted must appear after fixup executes"
     );
 }

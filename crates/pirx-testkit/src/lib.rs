@@ -14,7 +14,10 @@ use pirx_hw::{
         MetaConfig, QecConfig, TimingConfig,
     },
 };
-use pirx_ir::circuit::{CircuitMetadata, Dependency, OpKind, Operation, ProfilerCircuit};
+use pirx_ir::circuit::{
+    CircuitMetadata, ConditionalActivation, Dependency, MeasurementHook, MeasurementOutcome,
+    OpKind, Operation, ProfilerCircuit,
+};
 use smallvec::smallvec;
 
 // ── Sub-config builders ──────────────────────────────────────────────────────
@@ -308,6 +311,120 @@ pub fn clifford_t_measurement_chain() -> ProfilerCircuit {
         qubit_positions: None,
         hooks: vec![],
         metadata: blank_meta("clifford-t-measurement"),
+    }
+}
+
+/// Measurement(0) → hook → Clifford(1, inactive).
+///
+/// Outcome `One` activates op 1. Only one outcome branch, so for seeds that
+/// produce `Zero`, op 1 stays inactive and the circuit completes with 1 op.
+pub fn measurement_with_one_hook() -> ProfilerCircuit {
+    ProfilerCircuit {
+        ops: vec![
+            Operation {
+                id: 0,
+                kind: OpKind::Measurement { hook: Some(0) },
+                qubits: smallvec![0],
+                initially_active: true,
+            },
+            Operation {
+                id: 1,
+                kind: OpKind::Clifford,
+                qubits: smallvec![0],
+                initially_active: false,
+            },
+        ],
+        deps: vec![Dependency { from: 0, to: 1 }],
+        qubit_count: 1,
+        qubit_positions: None,
+        hooks: vec![MeasurementHook {
+            id: 0,
+            activations: vec![ConditionalActivation {
+                outcome: MeasurementOutcome::One,
+                ops_to_activate: vec![1],
+            }],
+        }],
+        metadata: blank_meta("hook-one-branch"),
+    }
+}
+
+/// Measurement(0) → hook → Clifford(1, Zero branch) or Clifford(2, One branch).
+///
+/// Both outcomes activate exactly one op. Verifies that exactly one branch
+/// executes per run and the other stays inactive.
+pub fn measurement_with_both_outcomes() -> ProfilerCircuit {
+    ProfilerCircuit {
+        ops: vec![
+            Operation {
+                id: 0,
+                kind: OpKind::Measurement { hook: Some(0) },
+                qubits: smallvec![0],
+                initially_active: true,
+            },
+            Operation {
+                id: 1,
+                kind: OpKind::Clifford,
+                qubits: smallvec![0],
+                initially_active: false,
+            },
+            Operation {
+                id: 2,
+                kind: OpKind::Clifford,
+                qubits: smallvec![0],
+                initially_active: false,
+            },
+        ],
+        deps: vec![Dependency { from: 0, to: 1 }, Dependency { from: 0, to: 2 }],
+        qubit_count: 1,
+        qubit_positions: None,
+        hooks: vec![MeasurementHook {
+            id: 0,
+            activations: vec![
+                ConditionalActivation {
+                    outcome: MeasurementOutcome::Zero,
+                    ops_to_activate: vec![1],
+                },
+                ConditionalActivation {
+                    outcome: MeasurementOutcome::One,
+                    ops_to_activate: vec![2],
+                },
+            ],
+        }],
+        metadata: blank_meta("hook-both-branches"),
+    }
+}
+
+/// Measurement(0) → hook → TGate(1, One branch).
+///
+/// The T-gate activated by hook can trigger injection error + fixup insertion.
+/// Tests hook + injection error interaction.
+pub fn hook_activates_t_gate() -> ProfilerCircuit {
+    ProfilerCircuit {
+        ops: vec![
+            Operation {
+                id: 0,
+                kind: OpKind::Measurement { hook: Some(0) },
+                qubits: smallvec![0],
+                initially_active: true,
+            },
+            Operation {
+                id: 1,
+                kind: OpKind::TGate,
+                qubits: smallvec![0],
+                initially_active: false,
+            },
+        ],
+        deps: vec![Dependency { from: 0, to: 1 }],
+        qubit_count: 1,
+        qubit_positions: None,
+        hooks: vec![MeasurementHook {
+            id: 0,
+            activations: vec![ConditionalActivation {
+                outcome: MeasurementOutcome::One,
+                ops_to_activate: vec![1],
+            }],
+        }],
+        metadata: blank_meta("hook-activates-t"),
     }
 }
 

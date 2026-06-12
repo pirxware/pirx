@@ -16,30 +16,80 @@ pub struct TraceEvent {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TraceEventKind {
     // Factory events
-    FactoryStarted { factory_id: u16 },
-    FactoryProduced { factory_id: u16 },
-    FactoryFailed { factory_id: u16 },
+    FactoryStarted {
+        factory_id: u16,
+    },
+    FactoryProduced {
+        factory_id: u16,
+    },
+    FactoryFailed {
+        factory_id: u16,
+    },
 
     // Gate lifecycle
-    GateReady { gate: u64 },
-    GateScheduled { gate: u64 },
-    GateStalled { gate: u64 },
-    GateServed { gate: u64, wait: u32 },
-    GateCompleted { gate: u64 },
+    GateReady {
+        gate: u64,
+    },
+    GateScheduled {
+        gate: u64,
+    },
+    GateStalled {
+        gate: u64,
+    },
+    GateServed {
+        gate: u64,
+        wait: u32,
+    },
+    GateCompleted {
+        gate: u64,
+    },
 
     // Injection errors
-    InjectionError { gate: u64 },
-    FixupInserted { fixup: u64, original: u64 },
-    FixupCompleted { fixup: u64 },
+    InjectionError {
+        gate: u64,
+    },
+    FixupInserted {
+        fixup: u64,
+        original: u64,
+    },
+    FixupCompleted {
+        fixup: u64,
+    },
 
     // Buffer
-    BufferEnqueue { occupancy: u32 },
-    BufferDequeue { occupancy: u32 },
+    BufferEnqueue {
+        occupancy: u32,
+    },
+    BufferDequeue {
+        occupancy: u32,
+    },
     BufferFull,
 
     // Routing (scalar model: latency events)
-    RoutingStarted { gate: u64 },
-    RoutingCompleted { gate: u64, latency: u32 },
+    RoutingStarted {
+        gate: u64,
+    },
+    RoutingCompleted {
+        gate: u64,
+        latency: u32,
+    },
+
+    // Measurement hooks
+    MeasurementOutcome {
+        gate: u64,
+        outcome: MeasurementOutcomeValue,
+    },
+    OpsActivated {
+        gate: u64,
+        activated_count: u32,
+    },
+}
+
+/// Measurement outcome for trace events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MeasurementOutcomeValue {
+    Zero,
+    One,
 }
 
 /// Complete execution trace — the primary output of the engine.

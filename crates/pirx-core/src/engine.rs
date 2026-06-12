@@ -9,9 +9,9 @@ use std::collections::{HashMap, VecDeque};
 
 use pirx_hw::RoutingConfig;
 use pirx_hw::model::HardwareModel;
-use pirx_ir::circuit::{GridPosition, ProfilerCircuit};
+use pirx_ir::circuit::{GridPosition, MeasurementHookId, MeasurementOutcome, ProfilerCircuit};
 use rand::{Rng as _, SeedableRng, rngs::StdRng};
-use slotmap::Key as _;
+use slotmap::{Key as _, SecondaryMap};
 use thiserror::Error;
 
 use crate::buffer::MagicStateBuffer;
@@ -19,7 +19,7 @@ use crate::dag::{Dag, DagError, FifoReadyQueue, OpKey, OpKind, ReadyQueue};
 use crate::events::{EngineEvent, EventQueue, TimedEvent};
 use crate::factory::{FactoryError, FactoryModel, FactoryOutcome, create_factories};
 use crate::routing;
-use crate::trace::{Trace, TraceCollector, TraceEventKind};
+use crate::trace::{MeasurementOutcomeValue, Trace, TraceCollector, TraceEventKind};
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -74,6 +74,15 @@ impl From<DagError> for EngineError {
     }
 }
 
+// ── Hook dispatch ────────────────────────────────────────────────────────────
+
+/// Key into the pre-resolved hook dispatch table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct HookKey {
+    hook_id: MeasurementHookId,
+    outcome: MeasurementOutcome,
+}
+
 // ── Engine ────────────────────────────────────────────────────────────────────
 
 /// Discrete-event simulation engine.
@@ -107,7 +116,13 @@ pub struct Engine {
     /// Cycle at which each gate entered the stall queue, for wait-time accounting.
     stall_start: HashMap<OpKey, u64>,
 
-    // Termination tracking (total_ops grows when fixups are injected)
+    // Measurement hook dispatch (pre-resolved at construction)
+    hook_map: HashMap<HookKey, Vec<OpKey>>,
+    /// Tracks which ops have completed, needed by dag.activate_ops() to
+    /// recompute effective predecessor counts on activation.
+    completed_set: SecondaryMap<OpKey, ()>,
+
+    // Termination tracking (total_ops grows when fixups are injected or hooks activate)
     total_ops: u64,
     completed_ops: u64,
 
@@ -137,8 +152,10 @@ impl Engine {
         let n_ops = circuit.ops.len();
 
         // Build DAG — validates circuit structure (acyclicity, dangling deps).
-        let dag = Dag::from_circuit(circuit, hw)?;
-        let total_ops = dag.op_count() as u64;
+        // id_to_key maps IR OpId → arena OpKey for hook target resolution.
+        let (dag, id_to_key) = Dag::from_circuit(circuit, hw)?;
+        // Only count initially active ops; inactive ops enter via hook activation.
+        let total_ops = dag.active_op_count() as u64;
 
         // Validate routing compatibility.
         if matches!(hw.routing, RoutingConfig::Manhattan { .. })
@@ -170,6 +187,25 @@ impl Engine {
             .saturating_mul(5)
             .saturating_add(factory_count.saturating_mul(3));
         let mut trace = TraceCollector::new(capacity_hint);
+
+        // Build hook dispatch map: (hook_id, outcome) → resolved OpKey targets.
+        // Pre-flattened so the hot loop does a single HashMap::get, zero allocation.
+        let mut hook_map: HashMap<HookKey, Vec<OpKey>> =
+            HashMap::with_capacity(circuit.hooks.len().saturating_mul(2));
+        for hook in &circuit.hooks {
+            for ca in &hook.activations {
+                let op_keys: Vec<OpKey> = ca
+                    .ops_to_activate
+                    .iter()
+                    .filter_map(|id| id_to_key.get(id).copied())
+                    .collect();
+                let key = HookKey {
+                    hook_id: hook.id,
+                    outcome: ca.outcome,
+                };
+                hook_map.insert(key, op_keys);
+            }
+        }
 
         // Schedule initial factory events and record FactoryStarted at cycle 0.
         let mut event_queue = EventQueue::new();
@@ -205,6 +241,8 @@ impl Engine {
             seed: config.seed,
             stalled_gates: VecDeque::new(),
             stall_start: HashMap::new(),
+            hook_map,
+            completed_set: SecondaryMap::with_capacity(n_ops),
             total_ops,
             completed_ops: 0,
             trace,
@@ -293,6 +331,9 @@ impl Engine {
                     );
                 }
                 self.completed_ops += 1;
+                if !self.hook_map.is_empty() {
+                    self.completed_set.insert(gate, ());
+                }
                 self.complete_gate(gate);
             }
         }
@@ -302,7 +343,8 @@ impl Engine {
     ///
     /// For T-gates and rotations, rolls the injection error die. On error,
     /// inserts a fixup node (already in the ready queue) and increments
-    /// `total_ops`. Otherwise, releases successors into the ready queue.
+    /// `total_ops`. For measurements with hooks, samples the outcome and
+    /// activates conditional ops. Otherwise, releases successors.
     fn complete_gate(&mut self, gate: OpKey) {
         let Some(kind) = self.dag.get(gate).map(|op| op.kind) else {
             return;
@@ -313,7 +355,7 @@ impl Engine {
                 // r#gen: `gen` is a reserved keyword in Rust 2024 edition.
                 self.rng.r#gen::<f64>() < self.injection_error_probability
             }
-            OpKind::Clifford | OpKind::Measurement | OpKind::Fixup => false,
+            OpKind::Clifford | OpKind::Measurement { .. } | OpKind::Fixup => false,
         };
 
         if inject {
@@ -334,8 +376,67 @@ impl Engine {
             // Fixup is now in ready_set. Count it so is_complete() stays correct.
             self.total_ops += 1;
         } else {
+            if let OpKind::Measurement {
+                hook: Some(hook_id),
+            } = kind
+            {
+                self.dispatch_hook(gate, hook_id);
+            }
             self.dag.release_successors(gate, &mut *self.ready_set);
         }
+    }
+
+    /// Sample a measurement outcome and activate the corresponding ops.
+    fn dispatch_hook(&mut self, gate: OpKey, hook_id: MeasurementHookId) {
+        let gate_raw = gate.data().as_ffi();
+
+        let outcome = if self.rng.r#gen::<bool>() {
+            MeasurementOutcome::One
+        } else {
+            MeasurementOutcome::Zero
+        };
+
+        let outcome_trace = match outcome {
+            MeasurementOutcome::Zero => MeasurementOutcomeValue::Zero,
+            MeasurementOutcome::One => MeasurementOutcomeValue::One,
+        };
+
+        self.trace.record(
+            self.current_cycle,
+            TraceEventKind::MeasurementOutcome {
+                gate: gate_raw,
+                outcome: outcome_trace,
+            },
+        );
+
+        let key = HookKey { hook_id, outcome };
+        let Some(to_activate) = self.hook_map.get(&key) else {
+            return;
+        };
+
+        if to_activate.is_empty() {
+            return;
+        }
+
+        let completed_set = &self.completed_set;
+        self.dag.activate_ops(
+            to_activate,
+            &|k| completed_set.contains_key(k),
+            &mut *self.ready_set,
+        );
+
+        #[allow(clippy::cast_possible_truncation)]
+        let activated_count = to_activate.len() as u32;
+
+        self.total_ops += u64::from(activated_count);
+
+        self.trace.record(
+            self.current_cycle,
+            TraceEventKind::OpsActivated {
+                gate: gate_raw,
+                activated_count,
+            },
+        );
     }
 
     /// Compute total gate cost including routing latency, emit routing trace

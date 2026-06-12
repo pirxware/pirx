@@ -163,4 +163,75 @@ proptest! {
 
         prop_assert_eq!(stalls, 0, "Clifford-only circuit must never stall");
     }
+
+    /// Engine terminates for circuits with hooks.
+    ///
+    /// The core deadlock fix: for any seed, a circuit with measurement hooks
+    /// must run to completion. total_ops is initialized from active ops only
+    /// and grows on activation, so completed_ops always reaches total_ops.
+    #[test]
+    fn hook_circuit_terminates(seed in 0u64..10_000) {
+        let circuit = pirx_testkit::measurement_with_both_outcomes();
+        let mut hw = pirx_testkit::cultivation_hw();
+        hw.injection.error_probability = 0.0;
+
+        let trace = Engine::new(&circuit, &hw, EngineConfig { seed })
+            .unwrap()
+            .run();
+
+        prop_assert!(trace.total_cycles > 0, "hook circuit must terminate");
+
+        let completed = trace.events.iter()
+            .filter(|e| matches!(
+                e.kind,
+                TraceEventKind::GateCompleted { .. } | TraceEventKind::FixupCompleted { .. }
+            ))
+            .count();
+
+        // 1 measurement + 1 activated branch = 2 completions minimum.
+        prop_assert!(completed >= 2, "expected >= 2 completions, got {completed}");
+    }
+
+    /// Completed ops == initially active ops + activated ops + fixups.
+    ///
+    /// For circuits with hooks, the engine must account for all three sources
+    /// of ops in its termination tracking.
+    #[test]
+    fn hook_completed_ops_accounting(seed in 0u64..10_000) {
+        let circuit = pirx_testkit::measurement_with_one_hook();
+        let hw = pirx_testkit::cultivation_hw();
+
+        let trace = Engine::new(&circuit, &hw, EngineConfig { seed })
+            .unwrap()
+            .run();
+
+        let completed = trace.events.iter()
+            .filter(|e| matches!(
+                e.kind,
+                TraceEventKind::GateCompleted { .. } | TraceEventKind::FixupCompleted { .. }
+            ))
+            .count() as u64;
+
+        let activated: u64 = trace.events.iter()
+            .filter_map(|e| match &e.kind {
+                TraceEventKind::OpsActivated { activated_count, .. } => Some(u64::from(*activated_count)),
+                _ => None,
+            })
+            .sum();
+
+        let fixups = trace.events.iter()
+            .filter(|e| matches!(e.kind, TraceEventKind::FixupInserted { .. }))
+            .count() as u64;
+
+        // initially_active = 1 (the measurement op)
+        let initially_active = 1u64;
+        let expected_total = initially_active + activated + fixups;
+
+        prop_assert_eq!(
+            completed,
+            expected_total,
+            "completed ({}) must equal initially_active ({}) + activated ({}) + fixups ({})",
+            completed, initially_active, activated, fixups
+        );
+    }
 }

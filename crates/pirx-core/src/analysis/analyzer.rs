@@ -207,18 +207,8 @@ impl ProfileAnalyzer {
     clippy::indexing_slicing
 )]
 mod tests {
-    use pirx_hw::{
-        CodeType, RoutingConfig,
-        model::{
-            BufferConfig, FactoryConfig, HardwareModel, InjectionConfig, MetaConfig, QecConfig,
-            TimingConfig,
-        },
-    };
-    use pirx_ir::{
-        ValidatedCircuit,
-        circuit::{CircuitMetadata, Dependency, OpKind, Operation, ProfilerCircuit},
-    };
-    use smallvec::smallvec;
+    use pirx_hw::model::HardwareModel;
+    use pirx_testkit::{cultivation_hw, single_clifford, t_gate_chain, validated};
 
     use super::{BottleneckType, ProfileAnalyzer};
     use crate::{
@@ -226,81 +216,21 @@ mod tests {
         trace::TraceEventKind,
     };
 
-    fn validated(circuit: ProfilerCircuit) -> ValidatedCircuit {
-        pirx_ir::validate::validate(circuit).expect("test fixture must be valid")
-    }
-
-    // ── Fixtures ──────────────────────────────────────────────────────────────
-
     fn cultivation_cold(factory_count: u32) -> HardwareModel {
-        HardwareModel {
-            meta: MetaConfig {
-                name: "test-cultivation-cold".into(),
-                description: String::new(),
-            },
-            qec: QecConfig {
-                code_type: CodeType::SurfaceCode,
-                code_distance: 7,
-                physical_error_rate: 1e-3,
-                error_correction_threshold: 0.01,
-                logical_error_prefactor: 0.038,
-            },
-            timing: TimingConfig {
-                cycle_time_us: 1.0,
-                measurement_time_us: 0.5,
-                classical_feedback_latency_us: 1.0,
-            },
-            factory: FactoryConfig::Cultivation {
-                count: factory_count,
-                lambda_raw: 0.002,
-                fault_distance: 3,
-            },
-            injection: InjectionConfig {
-                error_probability: 0.5,
-                fixup_cost_cycles: 1,
-            },
-            routing: RoutingConfig::default(),
-            buffer: BufferConfig {
-                capacity: 4,
-                preload: 0,
-            },
-        }
-    }
-
-    fn chain_5_t_gates() -> ProfilerCircuit {
-        let ops: Vec<Operation> = (0u64..5)
-            .map(|id| Operation {
-                id,
-                kind: OpKind::TGate,
-                qubits: smallvec![0],
-                initially_active: true,
-            })
-            .collect();
-        let deps: Vec<Dependency> = (0u64..4)
-            .map(|i| Dependency { from: i, to: i + 1 })
-            .collect();
-        ProfilerCircuit {
-            ops,
-            deps,
-            qubit_count: 1,
-            qubit_positions: None,
-            hooks: vec![],
-            metadata: CircuitMetadata {
-                name: "chain-5-t".into(),
-                source_framework: "test".into(),
-                t_count: 5,
-                clifford_count: 0,
-                rotation_count: 0,
-                depth: 5,
-            },
-        }
+        let mut hw = cultivation_hw();
+        hw.factory = pirx_hw::model::FactoryConfig::Cultivation {
+            count: factory_count,
+            lambda_raw: 0.002,
+            fault_distance: 3,
+        };
+        hw
     }
 
     // ── Tests ─────────────────────────────────────────────────────────────────
 
     #[test]
     fn total_cycles_matches_trace() {
-        let circuit = validated(chain_5_t_gates());
+        let circuit = validated(t_gate_chain(5));
         let hw = cultivation_cold(1);
         let trace = Engine::new(
             &circuit,
@@ -321,7 +251,7 @@ mod tests {
 
     #[test]
     fn injection_errors_count_matches_trace() {
-        let circuit = validated(chain_5_t_gates());
+        let circuit = validated(t_gate_chain(5));
         let hw = cultivation_cold(1);
         let trace = Engine::new(
             &circuit,
@@ -346,7 +276,7 @@ mod tests {
 
     #[test]
     fn factory_utilization_in_range() {
-        let circuit = validated(chain_5_t_gates());
+        let circuit = validated(t_gate_chain(5));
         let hw = cultivation_cold(2);
         let trace = Engine::new(
             &circuit,
@@ -375,7 +305,7 @@ mod tests {
 
     #[test]
     fn stall_events_nonempty_on_cold_start() {
-        let circuit = validated(chain_5_t_gates());
+        let circuit = validated(t_gate_chain(5));
         let hw = cultivation_cold(1);
         let trace = Engine::new(
             &circuit,
@@ -405,7 +335,7 @@ mod tests {
 
     #[test]
     fn profile_vector_lengths_consistent() {
-        let circuit = validated(chain_5_t_gates());
+        let circuit = validated(t_gate_chain(5));
         let hw = cultivation_cold(1);
         let trace = Engine::new(
             &circuit,
@@ -430,7 +360,7 @@ mod tests {
 
     #[test]
     fn no_injection_errors_when_probability_zero() {
-        let circuit = validated(chain_5_t_gates());
+        let circuit = validated(t_gate_chain(5));
         let mut hw = cultivation_cold(1);
         hw.injection.error_probability = 0.0;
         hw.buffer.preload = 4;
@@ -453,26 +383,7 @@ mod tests {
 
     #[test]
     fn bottleneck_none_when_no_stalls() {
-        let clifford = validated(ProfilerCircuit {
-            ops: vec![Operation {
-                id: 0,
-                kind: OpKind::Clifford,
-                qubits: smallvec![0],
-                initially_active: true,
-            }],
-            deps: vec![],
-            qubit_count: 1,
-            qubit_positions: None,
-            hooks: vec![],
-            metadata: CircuitMetadata {
-                name: "clifford".into(),
-                source_framework: "test".into(),
-                t_count: 0,
-                clifford_count: 1,
-                rotation_count: 0,
-                depth: 1,
-            },
-        });
+        let clifford = validated(single_clifford());
         let hw = cultivation_cold(1);
         let trace = Engine::new(
             &clifford,
@@ -497,7 +408,7 @@ mod tests {
 
     #[test]
     fn difference_array_matches_naive_reference() {
-        let circuit = validated(chain_5_t_gates());
+        let circuit = validated(t_gate_chain(5));
         let hw = cultivation_cold(2);
         let trace = Engine::new(
             &circuit,

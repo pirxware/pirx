@@ -14,18 +14,11 @@ use pirx_core::{
     engine::{Engine, EngineConfig},
     trace::{SYNTHETIC_ID_FLAG, TraceEventKind},
 };
-use pirx_hw::{
-    CodeType, RoutingConfig,
-    model::{
-        BufferConfig, DistillationProtocol, FactoryConfig, HardwareModel, InjectionConfig,
-        MetaConfig, QecConfig, TimingConfig, load,
-    },
-};
-use pirx_ir::{
-    ValidatedCircuit,
-    circuit::{
-        CircuitMetadata, Dependency, MeasurementOutcome, OpKind, Operation, ProfilerCircuit,
-    },
+use pirx_hw::model::{HardwareModel, load};
+use pirx_ir::circuit::{MeasurementOutcome, OpKind, Operation, ProfilerCircuit};
+use pirx_testkit::{
+    blank_meta, clifford_t_measurement_chain, cultivation_hw, deterministic_distillation_hw,
+    single_t_gate, two_parallel_t_gates, validated,
 };
 use smallvec::smallvec;
 
@@ -34,191 +27,12 @@ use smallvec::smallvec;
 const CULTIVATION_TOML: &str = include_str!("../../../models/surface_code_d17_cultivation.toml");
 const DISTILLATION_TOML: &str = include_str!("../../../models/surface_code_d17_distillation.toml");
 
-fn cultivation_hw() -> HardwareModel {
+fn cultivation_hw_toml() -> HardwareModel {
     load(CULTIVATION_TOML).unwrap()
 }
 
-fn distillation_hw() -> HardwareModel {
+fn distillation_hw_toml() -> HardwareModel {
     load(DISTILLATION_TOML).unwrap()
-}
-
-/// Minimal distillation hardware: deterministic 54-cycle production, no aborts.
-///
-/// `abort_probability = 0.0` so every production round succeeds.
-/// `cycles_per_round = 18, rounds = 3` → first magic state at cycle 54, then every 54 cycles.
-fn minimal_distillation_hw(
-    factory_count: u32,
-    buffer_capacity: u32,
-    preload: u32,
-) -> HardwareModel {
-    HardwareModel {
-        meta: MetaConfig {
-            name: "test-minimal".into(),
-            description: String::new(),
-        },
-        qec: QecConfig {
-            code_type: CodeType::SurfaceCode,
-            code_distance: 7,
-            physical_error_rate: 1e-3,
-            error_correction_threshold: 0.01,
-            logical_error_prefactor: 0.038,
-        },
-        timing: TimingConfig {
-            cycle_time_us: 1.0,
-            measurement_time_us: 0.5,
-            classical_feedback_latency_us: 1.0,
-        },
-        factory: FactoryConfig::Distillation {
-            count: factory_count,
-            protocol: DistillationProtocol::FifteenToOne,
-            cycles_per_round: 18,
-            rounds: 3,
-            abort_probability: 0.0,
-        },
-        injection: InjectionConfig {
-            error_probability: 0.5,
-            fixup_cost_cycles: 1,
-        },
-        routing: RoutingConfig::default(),
-        buffer: BufferConfig {
-            capacity: buffer_capacity,
-            preload,
-        },
-    }
-}
-
-// ── Circuit builders ──────────────────────────────────────────────────────────
-
-fn blank_meta(name: &str) -> CircuitMetadata {
-    CircuitMetadata {
-        name: name.into(),
-        source_framework: "test".into(),
-        t_count: 0,
-        clifford_count: 0,
-        rotation_count: 0,
-        depth: 1,
-    }
-}
-
-fn circuit_clifford() -> ProfilerCircuit {
-    ProfilerCircuit {
-        ops: vec![Operation {
-            id: 0,
-            kind: OpKind::Clifford,
-            qubits: smallvec![0],
-            initially_active: true,
-        }],
-        deps: vec![],
-        qubit_count: 1,
-        qubit_positions: None,
-        hooks: vec![],
-        metadata: blank_meta("clifford"),
-    }
-}
-
-fn circuit_t_gate() -> ProfilerCircuit {
-    ProfilerCircuit {
-        ops: vec![Operation {
-            id: 0,
-            kind: OpKind::TGate,
-            qubits: smallvec![0],
-            initially_active: true,
-        }],
-        deps: vec![],
-        qubit_count: 1,
-        qubit_positions: None,
-        hooks: vec![],
-        metadata: blank_meta("t-gate"),
-    }
-}
-
-fn circuit_two_t_gates() -> ProfilerCircuit {
-    ProfilerCircuit {
-        ops: vec![
-            Operation {
-                id: 0,
-                kind: OpKind::TGate,
-                qubits: smallvec![0],
-                initially_active: true,
-            },
-            Operation {
-                id: 1,
-                kind: OpKind::TGate,
-                qubits: smallvec![1],
-                initially_active: true,
-            },
-        ],
-        deps: vec![],
-        qubit_count: 2,
-        qubit_positions: None,
-        hooks: vec![],
-        metadata: blank_meta("two-t-gates"),
-    }
-}
-
-/// Clifford(0) → TGate(1) → Measurement(2) linear chain.
-fn circuit_chain() -> ProfilerCircuit {
-    ProfilerCircuit {
-        ops: vec![
-            Operation {
-                id: 0,
-                kind: OpKind::Clifford,
-                qubits: smallvec![0],
-                initially_active: true,
-            },
-            Operation {
-                id: 1,
-                kind: OpKind::TGate,
-                qubits: smallvec![0],
-                initially_active: true,
-            },
-            Operation {
-                id: 2,
-                kind: OpKind::Measurement { hook: None },
-                qubits: smallvec![0],
-                initially_active: true,
-            },
-        ],
-        deps: vec![Dependency { from: 0, to: 1 }, Dependency { from: 1, to: 2 }],
-        qubit_count: 1,
-        qubit_positions: None,
-        hooks: vec![],
-        metadata: blank_meta("chain"),
-    }
-}
-
-fn circuit_three_cliffords() -> ProfilerCircuit {
-    ProfilerCircuit {
-        ops: vec![
-            Operation {
-                id: 0,
-                kind: OpKind::Clifford,
-                qubits: smallvec![0],
-                initially_active: true,
-            },
-            Operation {
-                id: 1,
-                kind: OpKind::Clifford,
-                qubits: smallvec![1],
-                initially_active: true,
-            },
-            Operation {
-                id: 2,
-                kind: OpKind::Clifford,
-                qubits: smallvec![2],
-                initially_active: true,
-            },
-        ],
-        deps: vec![],
-        qubit_count: 3,
-        qubit_positions: None,
-        hooks: vec![],
-        metadata: blank_meta("three-cliffords"),
-    }
-}
-
-fn validated(circuit: ProfilerCircuit) -> ValidatedCircuit {
-    pirx_ir::validate::validate(circuit).expect("test fixture must be valid")
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -230,7 +44,7 @@ fn validated(circuit: ProfilerCircuit) -> ValidatedCircuit {
 #[test]
 fn single_clifford() {
     let trace = Engine::new(
-        &validated(circuit_clifford()),
+        &validated(pirx_testkit::single_clifford()),
         &cultivation_hw(),
         EngineConfig {
             seed: 0,
@@ -274,7 +88,7 @@ fn single_t_gate_served_immediately() {
     hw.buffer.preload = 1;
 
     let trace = Engine::new(
-        &validated(circuit_t_gate()),
+        &validated(single_t_gate()),
         &hw,
         EngineConfig {
             seed: 0,
@@ -304,10 +118,10 @@ fn single_t_gate_served_immediately() {
 /// the stalled gate with wait=54.
 #[test]
 fn t_gate_stalls_then_served() {
-    let hw = minimal_distillation_hw(1, 1, 0);
+    let hw = deterministic_distillation_hw(1, 1, 0);
 
     let trace = Engine::new(
-        &validated(circuit_two_t_gates()),
+        &validated(two_parallel_t_gates()),
         &hw,
         EngineConfig {
             seed: 0,
@@ -346,7 +160,7 @@ fn chain_respects_dependencies() {
     hw.buffer.preload = 1;
 
     let trace = Engine::new(
-        &validated(circuit_chain()),
+        &validated(clifford_t_measurement_chain()),
         &hw,
         EngineConfig {
             seed: 0,
@@ -393,7 +207,7 @@ fn chain_respects_dependencies() {
 #[test]
 fn parallel_cliffords() {
     let trace = Engine::new(
-        &validated(circuit_three_cliffords()),
+        &validated(pirx_testkit::parallel_cliffords(3)),
         &cultivation_hw(),
         EngineConfig {
             seed: 0,
@@ -435,16 +249,16 @@ fn parallel_cliffords() {
 /// 6. Determinism: identical seed + circuit + hardware → identical trace.
 #[test]
 fn determinism() {
-    let circuit = validated(circuit_chain());
+    let circuit = validated(clifford_t_measurement_chain());
     let config = EngineConfig {
         seed: 42,
         max_cycles: None,
     };
 
-    let t1 = Engine::new(&circuit, &cultivation_hw(), config)
+    let t1 = Engine::new(&circuit, &cultivation_hw_toml(), config)
         .unwrap()
         .run();
-    let t2 = Engine::new(&circuit, &cultivation_hw(), config)
+    let t2 = Engine::new(&circuit, &cultivation_hw_toml(), config)
         .unwrap()
         .run();
     assert_eq!(
@@ -452,10 +266,10 @@ fn determinism() {
         "cultivation: same seed must produce an identical trace"
     );
 
-    let t3 = Engine::new(&circuit, &distillation_hw(), config)
+    let t3 = Engine::new(&circuit, &distillation_hw_toml(), config)
         .unwrap()
         .run();
-    let t4 = Engine::new(&circuit, &distillation_hw(), config)
+    let t4 = Engine::new(&circuit, &distillation_hw_toml(), config)
         .unwrap()
         .run();
     assert_eq!(
@@ -470,7 +284,7 @@ fn determinism() {
 /// We scan the first 200 seeds to find a deterministic one that does.
 #[test]
 fn injection_fixup_extends_trace() {
-    let circuit = validated(circuit_t_gate());
+    let circuit = validated(single_t_gate());
 
     let trace = (0u64..200)
         .find_map(|seed| {
@@ -632,8 +446,8 @@ fn hook_both_outcomes_covered() {
 /// processed cycle, which must be strictly below max_cycles.
 #[test]
 fn max_cycles_truncates() {
-    let hw = minimal_distillation_hw(1, 1, 0);
-    let circuit = validated(circuit_two_t_gates());
+    let hw = deterministic_distillation_hw(1, 1, 0);
+    let circuit = validated(two_parallel_t_gates());
     let config = EngineConfig {
         seed: 0,
         max_cycles: Some(10),
@@ -653,8 +467,8 @@ fn max_cycles_truncates() {
     );
     // Verify the uncapped run would take longer.
     let full = Engine::new(
-        &validated(circuit_two_t_gates()),
-        &minimal_distillation_hw(1, 1, 0),
+        &validated(two_parallel_t_gates()),
+        &deterministic_distillation_hw(1, 1, 0),
         EngineConfig {
             seed: 0,
             max_cycles: None,
@@ -673,8 +487,8 @@ fn max_cycles_truncates() {
 /// 11. max_cycles=None runs to completion (same as before).
 #[test]
 fn max_cycles_none_completes() {
-    let hw = minimal_distillation_hw(1, 1, 1);
-    let circuit = validated(circuit_t_gate());
+    let hw = deterministic_distillation_hw(1, 1, 1);
+    let circuit = validated(single_t_gate());
     let config = EngineConfig {
         seed: 0,
         max_cycles: None,
@@ -700,7 +514,7 @@ fn max_cycles_none_completes() {
 fn max_cycles_larger_than_needed() {
     let mut hw = cultivation_hw();
     hw.injection.error_probability = 0.0;
-    let circuit = validated(circuit_clifford());
+    let circuit = validated(pirx_testkit::single_clifford());
     let config = EngineConfig {
         seed: 0,
         max_cycles: Some(1_000_000),

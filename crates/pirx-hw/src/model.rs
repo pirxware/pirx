@@ -49,6 +49,12 @@ pub enum HardwareModelError {
 
     #[error("routing overhead fraction must be in [0, 1], got {0}")]
     InvalidOverheadFraction(f64),
+
+    #[error("factory count {0} exceeds u16::MAX (65535)")]
+    FactoryCountExceedsLimit(u32),
+
+    #[error("buffer preload {preload} exceeds capacity {capacity}")]
+    PreloadExceedsCapacity { preload: u32, capacity: u32 },
 }
 
 // ── Enums ────────────────────────────────────────────────────────────────────
@@ -130,6 +136,11 @@ impl HardwareModel {
         if self.factory.count() == 0 {
             return Err(HardwareModelError::ZeroFactories);
         }
+        if self.factory.count() > u32::from(u16::MAX) {
+            return Err(HardwareModelError::FactoryCountExceedsLimit(
+                self.factory.count(),
+            ));
+        }
         match &self.factory {
             FactoryConfig::Cultivation { lambda_raw, .. } => {
                 if *lambda_raw <= 0.0 || lambda_raw.is_nan() {
@@ -169,6 +180,12 @@ impl HardwareModel {
         // Buffer
         if self.buffer.capacity == 0 {
             return Err(HardwareModelError::ZeroBufferCapacity);
+        }
+        if self.buffer.preload > self.buffer.capacity {
+            return Err(HardwareModelError::PreloadExceedsCapacity {
+                preload: self.buffer.preload,
+                capacity: self.buffer.capacity,
+            });
         }
 
         Ok(())
@@ -563,5 +580,36 @@ capacity = 4
         let toml =
             valid_toml(cultivation_factory()).replace("model = \"scalar\"", "model = \"magic\"");
         assert!(matches!(load(&toml), Err(HardwareModelError::Parse(_))));
+    }
+
+    #[test]
+    fn rejects_factory_count_over_u16_max() {
+        let toml = valid_toml(cultivation_factory()).replace("count = 4", "count = 70000");
+        assert!(matches!(
+            load(&toml),
+            Err(HardwareModelError::FactoryCountExceedsLimit(70000))
+        ));
+    }
+
+    #[test]
+    fn rejects_preload_exceeds_capacity() {
+        let toml = valid_toml(cultivation_factory()).replace(
+            "[buffer]\ncapacity = 4",
+            "[buffer]\ncapacity = 4\npreload = 10",
+        );
+        assert!(matches!(
+            load(&toml),
+            Err(HardwareModelError::PreloadExceedsCapacity {
+                preload: 10,
+                capacity: 4,
+            })
+        ));
+    }
+
+    #[test]
+    fn fixup_cost_zero_is_valid() {
+        let toml = valid_toml(cultivation_factory())
+            .replace("fixup_cost_cycles = 1", "fixup_cost_cycles = 0");
+        assert!(load(&toml).is_ok());
     }
 }

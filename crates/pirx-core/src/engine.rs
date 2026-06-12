@@ -9,13 +9,15 @@ use std::collections::{HashMap, VecDeque};
 
 use pirx_hw::RoutingConfig;
 use pirx_hw::model::HardwareModel;
-use pirx_ir::circuit::{GridPosition, ProfilerCircuit};
+use pirx_ir::ValidatedCircuit;
+use pirx_ir::circuit::{GridPosition, MeasurementHookId, MeasurementOutcome, OpId};
 use rand::{Rng as _, SeedableRng, rngs::StdRng};
-use slotmap::Key as _;
+use slotmap::{Key as _, SecondaryMap};
+use smallvec::SmallVec;
 use thiserror::Error;
 
 use crate::buffer::MagicStateBuffer;
-use crate::dag::{Dag, DagError, FifoReadyQueue, OpKey, OpKind, ReadyQueue};
+use crate::dag::{Dag, DagBuild, DagError, FifoReadyQueue, OpKey, OpKind, ReadyQueue};
 use crate::events::{EngineEvent, EventQueue, TimedEvent};
 use crate::factory::{FactoryError, FactoryModel, FactoryOutcome, create_factories};
 use crate::routing;
@@ -28,6 +30,9 @@ use crate::trace::{Trace, TraceCollector, TraceEventKind};
 pub struct EngineConfig {
     /// RNG seed. Same seed + same inputs = identical trace, always.
     pub seed: u64,
+    /// Maximum simulation cycles. `None` = run to completion.
+    /// When hit, the engine stops and the trace records `truncated: true`.
+    pub max_cycles: Option<u64>,
 }
 
 // ── Error ─────────────────────────────────────────────────────────────────────
@@ -38,15 +43,6 @@ pub struct EngineConfig {
 /// the simulation is guaranteed to run to completion without error.
 #[derive(Debug, Error)]
 pub enum EngineError {
-    #[error("circuit has no operations")]
-    EmptyCircuit,
-
-    #[error("dependency graph contains a cycle")]
-    CyclicDag,
-
-    #[error("dependency references a non-existent operation")]
-    DanglingDependency,
-
     #[error("too many distinct rotation angles: {0} (maximum 65535)")]
     TooManyRotationAngles(usize),
 
@@ -61,17 +57,36 @@ pub enum EngineError {
 
     #[error("manhattan routing requires qubit_positions in circuit")]
     MissingQubitPositions,
+
+    #[error("measurement hook {hook_id} references non-existent op {op_id}")]
+    DanglingHookTarget {
+        hook_id: MeasurementHookId,
+        op_id: OpId,
+    },
+
+    #[error("internal DAG error: {0}")]
+    Internal(String),
 }
 
 impl From<DagError> for EngineError {
     fn from(err: DagError) -> Self {
         match err {
-            DagError::EmptyCircuit => Self::EmptyCircuit,
-            DagError::DanglingDependency => Self::DanglingDependency,
-            DagError::CyclicDag => Self::CyclicDag,
             DagError::TooManyDistinctAngles(n) => Self::TooManyRotationAngles(n),
+            DagError::Internal(msg) => Self::Internal(msg),
         }
     }
+}
+
+// ── Hook dispatch ────────────────────────────────────────────────────────────
+
+/// Index into [`Engine::hook_table`] for a (hook_id, outcome) pair.
+/// Layout: `hook_id * 2 + outcome_ordinal`. Zero and One map to 0 and 1.
+fn hook_table_index(hook_id: MeasurementHookId, outcome: MeasurementOutcome) -> usize {
+    let ordinal = match outcome {
+        MeasurementOutcome::Zero => 0,
+        MeasurementOutcome::One => 1,
+    };
+    (hook_id as usize).saturating_mul(2).saturating_add(ordinal)
 }
 
 // ── Engine ────────────────────────────────────────────────────────────────────
@@ -101,13 +116,20 @@ pub struct Engine {
     current_cycle: u64,
     rng: StdRng,
     seed: u64,
+    max_cycles: Option<u64>,
 
     // Stalled T-gates: ready but waiting for a magic state
     stalled_gates: VecDeque<OpKey>,
     /// Cycle at which each gate entered the stall queue, for wait-time accounting.
     stall_start: HashMap<OpKey, u64>,
 
-    // Termination tracking (total_ops grows when fixups are injected)
+    // Measurement hook dispatch — flat table indexed by hook_id * 2 + outcome.
+    // Pre-resolved at construction so the hot loop does a single Vec::get.
+    hook_table: Vec<SmallVec<[OpKey; 2]>>,
+    /// Tracks completed ops for dag.activate_ops() predecessor recomputation.
+    completed_set: SecondaryMap<OpKey, ()>,
+
+    // Termination tracking (total_ops grows when fixups are injected or hooks activate)
     total_ops: u64,
     completed_ops: u64,
 
@@ -122,7 +144,7 @@ impl Engine {
     /// and RNG, seeds the initial ready queue, schedules initial factory events,
     /// and pre-allocates the trace collector.
     pub fn new(
-        circuit: &ProfilerCircuit,
+        circuit: &ValidatedCircuit,
         hw: &HardwareModel,
         config: EngineConfig,
     ) -> Result<Self, EngineError> {
@@ -136,9 +158,11 @@ impl Engine {
 
         let n_ops = circuit.ops.len();
 
-        // Build DAG — validates circuit structure (acyclicity, dangling deps).
-        let dag = Dag::from_circuit(circuit, hw)?;
-        let total_ops = dag.op_count() as u64;
+        // Build DAG from the validated circuit.
+        // id_to_key maps IR OpId → arena OpKey for hook target resolution.
+        let DagBuild { dag, id_to_key } = Dag::from_circuit(circuit, hw)?;
+        // Only count initially active ops; inactive ops enter via hook activation.
+        let total_ops = dag.active_op_count() as u64;
 
         // Validate routing compatibility.
         if matches!(hw.routing, RoutingConfig::Manhattan { .. })
@@ -170,6 +194,35 @@ impl Engine {
             .saturating_mul(5)
             .saturating_add(factory_count.saturating_mul(3));
         let mut trace = TraceCollector::new(capacity_hint);
+
+        // Build hook dispatch table: flat Vec indexed by hook_id * 2 + outcome.
+        // Pre-resolved so the hot loop does a single Vec::get, zero allocation.
+        let table_len = circuit
+            .hooks
+            .iter()
+            .map(|h| (h.id as usize).saturating_add(1))
+            .max()
+            .unwrap_or(0)
+            .saturating_mul(2);
+        let mut hook_table: Vec<SmallVec<[OpKey; 2]>> = vec![SmallVec::new(); table_len];
+        for hook in &circuit.hooks {
+            for activation in &hook.activations {
+                let mut op_keys = SmallVec::<[OpKey; 2]>::new();
+                for &op_id in &activation.ops_to_activate {
+                    let &key = id_to_key
+                        .get(&op_id)
+                        .ok_or(EngineError::DanglingHookTarget {
+                            hook_id: hook.id,
+                            op_id,
+                        })?;
+                    op_keys.push(key);
+                }
+                let idx = hook_table_index(hook.id, activation.outcome);
+                if let Some(slot) = hook_table.get_mut(idx) {
+                    *slot = op_keys;
+                }
+            }
+        }
 
         // Schedule initial factory events and record FactoryStarted at cycle 0.
         let mut event_queue = EventQueue::new();
@@ -203,19 +256,33 @@ impl Engine {
             current_cycle: 0,
             rng,
             seed: config.seed,
+            max_cycles: config.max_cycles,
             stalled_gates: VecDeque::new(),
             stall_start: HashMap::new(),
+            hook_table,
+            completed_set: SecondaryMap::with_capacity(
+                n_ops.saturating_add(n_ops / 2).saturating_add(16),
+            ),
             total_ops,
             completed_ops: 0,
             trace,
         })
     }
 
-    /// Run to completion, returning the sealed [`Trace`].
+    /// Run to completion or until `max_cycles` is reached, returning the sealed [`Trace`].
     ///
     /// Consumes the engine — an engine cannot be run twice.
+    /// If `max_cycles` is set and the limit is reached before all ops complete,
+    /// the returned trace has `truncated: true`.
     pub fn run(mut self) -> Trace {
         while !self.is_complete() {
+            if let Some(max) = self.max_cycles {
+                // DES jumps between event cycles — check the *next* event's cycle
+                // before processing it, not current_cycle (which lags by one step).
+                if self.event_queue.peek_cycle().is_some_and(|c| c >= max) {
+                    return self.trace.finish_truncated(self.seed, self.current_cycle);
+                }
+            }
             self.step();
         }
         self.trace.finish(self.seed, self.current_cycle)
@@ -293,6 +360,9 @@ impl Engine {
                     );
                 }
                 self.completed_ops += 1;
+                if !self.hook_table.is_empty() {
+                    self.completed_set.insert(gate, ());
+                }
                 self.complete_gate(gate);
             }
         }
@@ -302,7 +372,8 @@ impl Engine {
     ///
     /// For T-gates and rotations, rolls the injection error die. On error,
     /// inserts a fixup node (already in the ready queue) and increments
-    /// `total_ops`. Otherwise, releases successors into the ready queue.
+    /// `total_ops`. For measurements with hooks, samples the outcome and
+    /// activates conditional ops. Otherwise, releases successors.
     fn complete_gate(&mut self, gate: OpKey) {
         let Some(kind) = self.dag.get(gate).map(|op| op.kind) else {
             return;
@@ -313,7 +384,7 @@ impl Engine {
                 // r#gen: `gen` is a reserved keyword in Rust 2024 edition.
                 self.rng.r#gen::<f64>() < self.injection_error_probability
             }
-            OpKind::Clifford | OpKind::Measurement | OpKind::Fixup => false,
+            OpKind::Clifford | OpKind::Measurement { .. } | OpKind::Fixup => false,
         };
 
         if inject {
@@ -334,8 +405,60 @@ impl Engine {
             // Fixup is now in ready_set. Count it so is_complete() stays correct.
             self.total_ops += 1;
         } else {
+            if let OpKind::Measurement {
+                hook: Some(hook_id),
+            } = kind
+            {
+                self.dispatch_hook(gate, hook_id);
+            }
             self.dag.release_successors(gate, &mut *self.ready_set);
         }
+    }
+
+    /// Sample a measurement outcome and activate the corresponding ops.
+    fn dispatch_hook(&mut self, gate: OpKey, hook_id: MeasurementHookId) {
+        let gate_raw = gate.data().as_ffi();
+
+        let outcome = if self.rng.r#gen::<bool>() {
+            MeasurementOutcome::One
+        } else {
+            MeasurementOutcome::Zero
+        };
+
+        self.trace.record(
+            self.current_cycle,
+            TraceEventKind::MeasurementOutcome {
+                gate: gate_raw,
+                outcome,
+            },
+        );
+
+        let idx = hook_table_index(hook_id, outcome);
+        let Some(to_activate) = self.hook_table.get(idx) else {
+            return;
+        };
+        if to_activate.is_empty() {
+            return;
+        }
+
+        let completed_set = &self.completed_set;
+        self.dag.activate_ops(
+            to_activate,
+            &|k| completed_set.contains_key(k),
+            &mut *self.ready_set,
+        );
+
+        #[allow(clippy::cast_possible_truncation)]
+        let activated_count = to_activate.len() as u32;
+        self.total_ops += u64::from(activated_count);
+
+        self.trace.record(
+            self.current_cycle,
+            TraceEventKind::OpsActivated {
+                gate: gate_raw,
+                activated_count,
+            },
+        );
     }
 
     /// Compute total gate cost including routing latency, emit routing trace
@@ -508,10 +631,15 @@ mod tests {
         TimingConfig,
     };
     use pirx_hw::{CodeType, RoutingConfig};
+    use pirx_ir::ValidatedCircuit;
     use pirx_ir::circuit::{CircuitMetadata, OpKind as IrOpKind, Operation, ProfilerCircuit};
     use smallvec::smallvec;
 
     use super::{Engine, EngineConfig, EngineError};
+
+    fn validated(circuit: ProfilerCircuit) -> ValidatedCircuit {
+        pirx_ir::validate::validate(circuit).expect("test fixture must be valid")
+    }
 
     // ── Fixtures ─────────────────────────────────────────────────────────────
 
@@ -593,8 +721,16 @@ mod tests {
             lambda_raw: 0.002,
             fault_distance: 3,
         };
+        let circuit = validated(single_clifford());
         assert!(matches!(
-            Engine::new(&single_clifford(), &hw, EngineConfig { seed: 0 }),
+            Engine::new(
+                &circuit,
+                &hw,
+                EngineConfig {
+                    seed: 0,
+                    max_cycles: None
+                }
+            ),
             Err(EngineError::NoFactories)
         ));
     }
@@ -606,8 +742,16 @@ mod tests {
             capacity: 0,
             preload: 0,
         };
+        let circuit = validated(single_clifford());
         assert!(matches!(
-            Engine::new(&single_clifford(), &hw, EngineConfig { seed: 0 }),
+            Engine::new(
+                &circuit,
+                &hw,
+                EngineConfig {
+                    seed: 0,
+                    max_cycles: None
+                }
+            ),
             Err(EngineError::ZeroBuffer)
         ));
     }
@@ -618,9 +762,12 @@ mod tests {
     /// terminate, produce a non-empty trace, and advance at least one cycle.
     #[test]
     fn smoke_single_clifford_cultivation() {
-        let circuit = single_clifford();
+        let circuit = validated(single_clifford());
         let hw = cultivation_hw();
-        let config = EngineConfig { seed: 42 };
+        let config = EngineConfig {
+            seed: 42,
+            max_cycles: None,
+        };
 
         let engine = Engine::new(&circuit, &hw, config).expect("valid engine");
         let trace = engine.run();
@@ -640,9 +787,16 @@ mod tests {
     #[test]
     fn rejects_manhattan_without_positions() {
         let hw = manhattan_hw();
-        let circuit = single_clifford(); // qubit_positions: None
+        let circuit = validated(single_clifford()); // qubit_positions: None
         assert!(matches!(
-            Engine::new(&circuit, &hw, EngineConfig { seed: 0 }),
+            Engine::new(
+                &circuit,
+                &hw,
+                EngineConfig {
+                    seed: 0,
+                    max_cycles: None
+                }
+            ),
             Err(EngineError::MissingQubitPositions)
         ));
     }
@@ -650,8 +804,15 @@ mod tests {
     #[test]
     fn scalar_routing_does_not_require_positions() {
         let hw = cultivation_hw(); // scalar routing
-        let circuit = single_clifford(); // qubit_positions: None
-        let engine = Engine::new(&circuit, &hw, EngineConfig { seed: 42 });
+        let circuit = validated(single_clifford()); // qubit_positions: None
+        let engine = Engine::new(
+            &circuit,
+            &hw,
+            EngineConfig {
+                seed: 42,
+                max_cycles: None,
+            },
+        );
         assert!(engine.is_ok());
     }
 }

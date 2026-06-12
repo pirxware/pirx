@@ -4,6 +4,27 @@ use std::collections::VecDeque;
 
 use crate::circuit::ProfilerCircuit;
 
+/// A [`ProfilerCircuit`] that has passed all validation checks.
+///
+/// Created only by [`validate()`]. Cannot be constructed directly.
+/// `Deref` provides transparent read access to the inner circuit.
+///
+/// Implements `Serialize` via the inner circuit (for `.pirx.json` interchange).
+/// Does **not** implement `Deserialize` — deserialized circuits must go through
+/// [`validate()`] to obtain a new proof token.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(transparent)]
+pub struct ValidatedCircuit {
+    inner: ProfilerCircuit,
+}
+
+impl std::ops::Deref for ValidatedCircuit {
+    type Target = ProfilerCircuit;
+    fn deref(&self) -> &ProfilerCircuit {
+        &self.inner
+    }
+}
+
 /// Errors detected during IR validation.
 #[derive(Debug, thiserror::Error)]
 pub enum ValidationError {
@@ -57,7 +78,7 @@ pub enum ValidationError {
 /// - Hook activation targets reference existing, inactive operations
 /// - No orphaned inactive ops (every inactive op reachable from a hook)
 /// - Dependency graph is acyclic (topological sort via Kahn's algorithm)
-pub fn validate(circuit: &ProfilerCircuit) -> Result<(), ValidationError> {
+pub fn validate(circuit: ProfilerCircuit) -> Result<ValidatedCircuit, ValidationError> {
     if circuit.ops.is_empty() {
         return Err(ValidationError::EmptyCircuit);
     }
@@ -188,7 +209,7 @@ pub fn validate(circuit: &ProfilerCircuit) -> Result<(), ValidationError> {
         return Err(ValidationError::CyclicDag);
     }
 
-    Ok(())
+    Ok(ValidatedCircuit { inner: circuit })
 }
 
 #[cfg(test)]
@@ -240,14 +261,14 @@ mod tests {
 
     #[test]
     fn valid_circuit_passes() {
-        assert!(validate(&minimal_circuit()).is_ok());
+        assert!(validate(minimal_circuit()).is_ok());
     }
 
     #[test]
     fn empty_circuit_rejected() {
         let mut c = minimal_circuit();
         c.ops.clear();
-        assert!(matches!(validate(&c), Err(ValidationError::EmptyCircuit)));
+        assert!(matches!(validate(c), Err(ValidationError::EmptyCircuit)));
     }
 
     #[test]
@@ -255,7 +276,7 @@ mod tests {
         let mut c = minimal_circuit();
         c.deps.push(Dependency { from: 0, to: 99 });
         assert!(matches!(
-            validate(&c),
+            validate(c),
             Err(ValidationError::DanglingDependency(99))
         ));
     }
@@ -265,7 +286,7 @@ mod tests {
         let mut c = minimal_circuit();
         c.ops[0].qubits = smallvec![5];
         assert!(matches!(
-            validate(&c),
+            validate(c),
             Err(ValidationError::InvalidQubit { .. })
         ));
     }
@@ -274,7 +295,7 @@ mod tests {
     fn cyclic_dag_rejected() {
         let mut c = minimal_circuit();
         c.deps.push(Dependency { from: 1, to: 0 });
-        assert!(matches!(validate(&c), Err(ValidationError::CyclicDag)));
+        assert!(matches!(validate(c), Err(ValidationError::CyclicDag)));
     }
 
     #[test]
@@ -287,7 +308,7 @@ mod tests {
             initially_active: true,
         });
         assert!(matches!(
-            validate(&c),
+            validate(c),
             Err(ValidationError::DuplicateOpId(0))
         ));
     }
@@ -302,7 +323,7 @@ mod tests {
             row: 0,
             col: 0,
         }]);
-        assert!(validate(&c).is_ok());
+        assert!(validate(c).is_ok());
     }
 
     #[test]
@@ -321,7 +342,7 @@ mod tests {
             },
         ]);
         assert!(matches!(
-            validate(&c),
+            validate(c),
             Err(ValidationError::QubitPositionCountMismatch {
                 expected: 1,
                 got: 2
@@ -346,7 +367,7 @@ mod tests {
             },
         ]);
         assert!(matches!(
-            validate(&c),
+            validate(c),
             Err(ValidationError::DuplicateQubitPosition(0))
         ));
     }
@@ -360,7 +381,7 @@ mod tests {
             col: 0,
         }]);
         assert!(matches!(
-            validate(&c),
+            validate(c),
             Err(ValidationError::QubitPositionInvalidQubit {
                 qubit_id: 99,
                 qubit_count: 1
@@ -399,7 +420,7 @@ mod tests {
             }],
             metadata: test_meta(),
         };
-        assert!(validate(&c).is_ok());
+        assert!(validate(c).is_ok());
     }
 
     #[test]
@@ -418,7 +439,7 @@ mod tests {
             metadata: test_meta(),
         };
         assert!(matches!(
-            validate(&c),
+            validate(c),
             Err(ValidationError::DanglingHookReference(99))
         ));
     }
@@ -445,7 +466,7 @@ mod tests {
             metadata: test_meta(),
         };
         assert!(matches!(
-            validate(&c),
+            validate(c),
             Err(ValidationError::DanglingDependency(999))
         ));
     }
@@ -480,7 +501,7 @@ mod tests {
             metadata: test_meta(),
         };
         assert!(matches!(
-            validate(&c),
+            validate(c),
             Err(ValidationError::ActiveOpInHook(1))
         ));
     }
@@ -509,7 +530,7 @@ mod tests {
             metadata: test_meta(),
         };
         assert!(matches!(
-            validate(&c),
+            validate(c),
             Err(ValidationError::OrphanedInactiveOp(1))
         ));
     }
@@ -529,7 +550,7 @@ mod tests {
             hooks: vec![],
             metadata: test_meta(),
         };
-        assert!(validate(&c).is_ok());
+        assert!(validate(c).is_ok());
     }
 
     #[test]
@@ -573,6 +594,6 @@ mod tests {
             }],
             metadata: test_meta(),
         };
-        assert!(validate(&c).is_ok());
+        assert!(validate(c).is_ok());
     }
 }

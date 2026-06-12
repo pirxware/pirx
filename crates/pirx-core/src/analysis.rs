@@ -183,10 +183,16 @@ impl ProfileAnalyzer {
                     }
                 }
 
-                // GateReady, GateScheduled, GateStalled, GateCompleted (wait=0 case
-                // of GateServed), BufferFull, RoutingStarted, RoutingCompleted — no
-                // additional metric contribution beyond what is already accumulated.
-                _ => {}
+                TraceEventKind::GateReady { .. }
+                | TraceEventKind::GateScheduled { .. }
+                | TraceEventKind::GateStalled { .. }
+                | TraceEventKind::GateServed { .. }
+                | TraceEventKind::GateCompleted { .. }
+                | TraceEventKind::BufferFull
+                | TraceEventKind::RoutingStarted { .. }
+                | TraceEventKind::RoutingCompleted { .. }
+                | TraceEventKind::MeasurementOutcome { .. }
+                | TraceEventKind::OpsActivated { .. } => {}
             }
         }
 
@@ -258,6 +264,7 @@ mod tests {
             TimingConfig,
         },
     };
+    use pirx_ir::ValidatedCircuit;
     use pirx_ir::circuit::{CircuitMetadata, Dependency, OpKind, Operation, ProfilerCircuit};
     use smallvec::smallvec;
 
@@ -267,6 +274,10 @@ mod tests {
     };
 
     use super::{BottleneckType, ProfileAnalyzer};
+
+    fn validated(circuit: ProfilerCircuit) -> ValidatedCircuit {
+        pirx_ir::validate::validate(circuit).expect("test fixture must be valid")
+    }
 
     // ── Fixtures ──────────────────────────────────────────────────────────────
 
@@ -341,11 +352,18 @@ mod tests {
     /// total_cycles in the profile must match trace.total_cycles exactly.
     #[test]
     fn total_cycles_matches_trace() {
-        let circuit = chain_5_t_gates();
+        let circuit = validated(chain_5_t_gates());
         let hw = cultivation_cold(1);
-        let trace = Engine::new(&circuit, &hw, EngineConfig { seed: 0 })
-            .unwrap()
-            .run();
+        let trace = Engine::new(
+            &circuit,
+            &hw,
+            EngineConfig {
+                seed: 0,
+                max_cycles: None,
+            },
+        )
+        .unwrap()
+        .run();
 
         let expected = trace.total_cycles;
         let profile = ProfileAnalyzer::analyze(&trace, 1, 10);
@@ -356,11 +374,18 @@ mod tests {
     /// injection_errors must equal the number of InjectionError trace events.
     #[test]
     fn injection_errors_count_matches_trace() {
-        let circuit = chain_5_t_gates();
+        let circuit = validated(chain_5_t_gates());
         let hw = cultivation_cold(1);
-        let trace = Engine::new(&circuit, &hw, EngineConfig { seed: 0 })
-            .unwrap()
-            .run();
+        let trace = Engine::new(
+            &circuit,
+            &hw,
+            EngineConfig {
+                seed: 0,
+                max_cycles: None,
+            },
+        )
+        .unwrap()
+        .run();
 
         let trace_count = trace
             .events
@@ -375,11 +400,18 @@ mod tests {
     /// Every factory_utilization value must be in [0.0, 1.0].
     #[test]
     fn factory_utilization_in_range() {
-        let circuit = chain_5_t_gates();
+        let circuit = validated(chain_5_t_gates());
         let hw = cultivation_cold(2);
-        let trace = Engine::new(&circuit, &hw, EngineConfig { seed: 42 })
-            .unwrap()
-            .run();
+        let trace = Engine::new(
+            &circuit,
+            &hw,
+            EngineConfig {
+                seed: 42,
+                max_cycles: None,
+            },
+        )
+        .unwrap()
+        .run();
 
         let profile = ProfileAnalyzer::analyze(&trace, 2, 5);
 
@@ -400,11 +432,18 @@ mod tests {
     /// one production cycle. stall_events must therefore be non-empty.
     #[test]
     fn stall_events_nonempty_on_cold_start() {
-        let circuit = chain_5_t_gates();
+        let circuit = validated(chain_5_t_gates());
         let hw = cultivation_cold(1);
-        let trace = Engine::new(&circuit, &hw, EngineConfig { seed: 7 })
-            .unwrap()
-            .run();
+        let trace = Engine::new(
+            &circuit,
+            &hw,
+            EngineConfig {
+                seed: 7,
+                max_cycles: None,
+            },
+        )
+        .unwrap()
+        .run();
 
         // Confirm the trace itself has stalled-then-served events.
         assert!(
@@ -425,11 +464,18 @@ mod tests {
     /// bottleneck_type length must equal factory_utilization length (num_buckets).
     #[test]
     fn profile_vector_lengths_consistent() {
-        let circuit = chain_5_t_gates();
+        let circuit = validated(chain_5_t_gates());
         let hw = cultivation_cold(1);
-        let trace = Engine::new(&circuit, &hw, EngineConfig { seed: 1 })
-            .unwrap()
-            .run();
+        let trace = Engine::new(
+            &circuit,
+            &hw,
+            EngineConfig {
+                seed: 1,
+                max_cycles: None,
+            },
+        )
+        .unwrap()
+        .run();
 
         let resolution = 8;
         let profile = ProfileAnalyzer::analyze(&trace, 1, resolution);
@@ -445,13 +491,20 @@ mod tests {
     /// and zero fixups_inserted.
     #[test]
     fn no_injection_errors_when_probability_zero() {
-        let circuit = chain_5_t_gates();
+        let circuit = validated(chain_5_t_gates());
         let mut hw = cultivation_cold(1);
         hw.injection.error_probability = 0.0;
         hw.buffer.preload = 4; // warm start so T-gates don't stall
-        let trace = Engine::new(&circuit, &hw, EngineConfig { seed: 99 })
-            .unwrap()
-            .run();
+        let trace = Engine::new(
+            &circuit,
+            &hw,
+            EngineConfig {
+                seed: 99,
+                max_cycles: None,
+            },
+        )
+        .unwrap()
+        .run();
 
         let profile = ProfileAnalyzer::analyze(&trace, 1, 1);
         assert_eq!(profile.injection_errors, 0);
@@ -463,7 +516,7 @@ mod tests {
     /// bottleneck_type must be None in every bucket.
     #[test]
     fn bottleneck_none_when_no_stalls() {
-        let clifford = ProfilerCircuit {
+        let clifford = validated(ProfilerCircuit {
             ops: vec![Operation {
                 id: 0,
                 kind: OpKind::Clifford,
@@ -482,11 +535,18 @@ mod tests {
                 rotation_count: 0,
                 depth: 1,
             },
-        };
+        });
         let hw = cultivation_cold(1);
-        let trace = Engine::new(&clifford, &hw, EngineConfig { seed: 0 })
-            .unwrap()
-            .run();
+        let trace = Engine::new(
+            &clifford,
+            &hw,
+            EngineConfig {
+                seed: 0,
+                max_cycles: None,
+            },
+        )
+        .unwrap()
+        .run();
 
         let profile = ProfileAnalyzer::analyze(&trace, 1, 1);
         for (i, &bt) in profile.bottleneck_type.iter().enumerate() {

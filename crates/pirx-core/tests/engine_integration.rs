@@ -21,6 +21,8 @@ use pirx_hw::{
         MetaConfig, QecConfig, TimingConfig, load,
     },
 };
+use pirx_ir::ValidatedCircuit;
+use pirx_ir::circuit::MeasurementOutcome;
 use pirx_ir::circuit::{CircuitMetadata, Dependency, OpKind, Operation, ProfilerCircuit};
 use smallvec::smallvec;
 
@@ -212,6 +214,10 @@ fn circuit_three_cliffords() -> ProfilerCircuit {
     }
 }
 
+fn validated(circuit: ProfilerCircuit) -> ValidatedCircuit {
+    pirx_ir::validate::validate(circuit).expect("test fixture must be valid")
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 /// 1. Single Clifford, no dependencies.
@@ -221,9 +227,12 @@ fn circuit_three_cliffords() -> ProfilerCircuit {
 #[test]
 fn single_clifford() {
     let trace = Engine::new(
-        &circuit_clifford(),
+        &validated(circuit_clifford()),
         &cultivation_hw(),
-        EngineConfig { seed: 0 },
+        EngineConfig {
+            seed: 0,
+            max_cycles: None,
+        },
     )
     .unwrap()
     .run();
@@ -261,9 +270,16 @@ fn single_t_gate_served_immediately() {
     let mut hw = cultivation_hw();
     hw.buffer.preload = 1;
 
-    let trace = Engine::new(&circuit_t_gate(), &hw, EngineConfig { seed: 0 })
-        .unwrap()
-        .run();
+    let trace = Engine::new(
+        &validated(circuit_t_gate()),
+        &hw,
+        EngineConfig {
+            seed: 0,
+            max_cycles: None,
+        },
+    )
+    .unwrap()
+    .run();
 
     let served: Vec<_> = trace
         .events
@@ -287,9 +303,16 @@ fn single_t_gate_served_immediately() {
 fn t_gate_stalls_then_served() {
     let hw = minimal_distillation_hw(1, 1, 0);
 
-    let trace = Engine::new(&circuit_two_t_gates(), &hw, EngineConfig { seed: 0 })
-        .unwrap()
-        .run();
+    let trace = Engine::new(
+        &validated(circuit_two_t_gates()),
+        &hw,
+        EngineConfig {
+            seed: 0,
+            max_cycles: None,
+        },
+    )
+    .unwrap()
+    .run();
 
     assert!(
         trace
@@ -319,9 +342,16 @@ fn chain_respects_dependencies() {
     // Pre-load the buffer so the T-gate is served without waiting on factory timing.
     hw.buffer.preload = 1;
 
-    let trace = Engine::new(&circuit_chain(), &hw, EngineConfig { seed: 0 })
-        .unwrap()
-        .run();
+    let trace = Engine::new(
+        &validated(circuit_chain()),
+        &hw,
+        EngineConfig {
+            seed: 0,
+            max_cycles: None,
+        },
+    )
+    .unwrap()
+    .run();
 
     let completed_cycles: Vec<u64> = trace
         .events
@@ -360,9 +390,12 @@ fn chain_respects_dependencies() {
 #[test]
 fn parallel_cliffords() {
     let trace = Engine::new(
-        &circuit_three_cliffords(),
+        &validated(circuit_three_cliffords()),
         &cultivation_hw(),
-        EngineConfig { seed: 0 },
+        EngineConfig {
+            seed: 0,
+            max_cycles: None,
+        },
     )
     .unwrap()
     .run();
@@ -399,8 +432,11 @@ fn parallel_cliffords() {
 /// 6. Determinism: identical seed + circuit + hardware → identical trace.
 #[test]
 fn determinism() {
-    let circuit = circuit_chain();
-    let config = EngineConfig { seed: 42 };
+    let circuit = validated(circuit_chain());
+    let config = EngineConfig {
+        seed: 42,
+        max_cycles: None,
+    };
 
     let t1 = Engine::new(&circuit, &cultivation_hw(), config)
         .unwrap()
@@ -431,15 +467,22 @@ fn determinism() {
 /// We scan the first 200 seeds to find a deterministic one that does.
 #[test]
 fn injection_fixup_extends_trace() {
-    let circuit = circuit_t_gate();
+    let circuit = validated(circuit_t_gate());
 
     let trace = (0u64..200)
         .find_map(|seed| {
             let mut hw = cultivation_hw();
             hw.buffer.preload = 1; // T-gate served immediately so injection can fire
-            let t = Engine::new(&circuit, &hw, EngineConfig { seed })
-                .unwrap()
-                .run();
+            let t = Engine::new(
+                &circuit,
+                &hw,
+                EngineConfig {
+                    seed,
+                    max_cycles: None,
+                },
+            )
+            .unwrap()
+            .run();
             if t.events
                 .iter()
                 .any(|e| matches!(e.kind, TraceEventKind::InjectionError { .. }))
@@ -471,5 +514,256 @@ fn injection_fixup_extends_trace() {
             .iter()
             .any(|e| matches!(e.kind, TraceEventKind::FixupCompleted { .. })),
         "FixupCompleted must appear after the fixup op executes"
+    );
+}
+
+// ── Hook tests ───────────────────────────────────────────────────────────────
+
+/// 8. Measurement hook circuit terminates for every seed.
+///
+/// This is the core deadlock fix: circuits with hooks must complete.
+/// The engine must activate inactive ops on measurement completion and
+/// adjust total_ops so the termination condition is reachable.
+#[test]
+fn hook_circuit_terminates() {
+    let circuit = validated(pirx_testkit::measurement_with_one_hook());
+    let mut hw = cultivation_hw();
+    hw.injection.error_probability = 0.0;
+
+    for seed in 0u64..100 {
+        let trace = Engine::new(
+            &circuit,
+            &hw,
+            EngineConfig {
+                seed,
+                max_cycles: None,
+            },
+        )
+        .unwrap()
+        .run();
+
+        assert!(
+            trace.total_cycles > 0,
+            "hook circuit must terminate (seed {seed})"
+        );
+        assert!(
+            trace
+                .events
+                .iter()
+                .any(|e| matches!(e.kind, TraceEventKind::GateCompleted { .. })),
+            "measurement must complete (seed {seed})"
+        );
+    }
+}
+
+/// 9. Both-outcomes hook: Zero activates op 1, One activates op 2.
+///
+/// Over enough seeds, both outcomes must appear. For each run, exactly one
+/// branch activates (2 completions total: measurement + one branch op).
+#[test]
+fn hook_both_outcomes_covered() {
+    let circuit = validated(pirx_testkit::measurement_with_both_outcomes());
+    let mut hw = cultivation_hw();
+    hw.injection.error_probability = 0.0;
+
+    let mut saw_zero = false;
+    let mut saw_one = false;
+
+    for seed in 0u64..200 {
+        let trace = Engine::new(
+            &circuit,
+            &hw,
+            EngineConfig {
+                seed,
+                max_cycles: None,
+            },
+        )
+        .unwrap()
+        .run();
+
+        let outcomes: Vec<_> = trace
+            .events
+            .iter()
+            .filter_map(|e| match &e.kind {
+                TraceEventKind::MeasurementOutcome { outcome, .. } => Some(*outcome),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(
+            outcomes.len(),
+            1,
+            "exactly one measurement outcome per run (seed {seed})"
+        );
+
+        match outcomes[0] {
+            MeasurementOutcome::Zero => saw_zero = true,
+            MeasurementOutcome::One => saw_one = true,
+        }
+
+        // Exactly 2 completions: measurement + one activated branch.
+        let completed = trace
+            .events
+            .iter()
+            .filter(|e| matches!(e.kind, TraceEventKind::GateCompleted { .. }))
+            .count();
+        assert_eq!(
+            completed, 2,
+            "measurement + exactly one branch must complete (seed {seed})"
+        );
+
+        if saw_zero && saw_one {
+            break;
+        }
+    }
+
+    assert!(saw_zero, "Zero outcome must appear in 200 seeds");
+    assert!(saw_one, "One outcome must appear in 200 seeds");
+}
+
+/// 10. max_cycles truncates the simulation before all ops complete.
+///
+/// A T-gate chain with no buffer preload takes many cycles (factory must
+/// produce states). With max_cycles=10, the engine stops before the first
+/// factory production (at cycle 54). total_cycles reflects the last
+/// processed cycle, which must be strictly below max_cycles.
+#[test]
+fn max_cycles_truncates() {
+    let hw = minimal_distillation_hw(1, 1, 0);
+    let circuit = validated(circuit_two_t_gates());
+    let config = EngineConfig {
+        seed: 0,
+        max_cycles: Some(10),
+    };
+
+    let trace = Engine::new(&circuit, &hw, config).unwrap().run();
+
+    assert!(
+        trace.truncated,
+        "trace must be truncated when max_cycles is hit"
+    );
+    assert!(
+        trace.total_cycles < 10,
+        "total_cycles ({}) must be below max_cycles (10) — the engine stops before \
+         processing events at the limit cycle",
+        trace.total_cycles
+    );
+    // Verify the uncapped run would take longer.
+    let full = Engine::new(
+        &validated(circuit_two_t_gates()),
+        &minimal_distillation_hw(1, 1, 0),
+        EngineConfig {
+            seed: 0,
+            max_cycles: None,
+        },
+    )
+    .unwrap()
+    .run();
+    assert!(!full.truncated, "uncapped run must complete normally");
+    assert!(
+        full.total_cycles > 10,
+        "uncapped run ({} cycles) must exceed the max_cycles limit",
+        full.total_cycles
+    );
+}
+
+/// 11. max_cycles=None runs to completion (same as before).
+#[test]
+fn max_cycles_none_completes() {
+    let hw = minimal_distillation_hw(1, 1, 1);
+    let circuit = validated(circuit_t_gate());
+    let config = EngineConfig {
+        seed: 0,
+        max_cycles: None,
+    };
+
+    let trace = Engine::new(&circuit, &hw, config).unwrap().run();
+
+    assert!(
+        !trace.truncated,
+        "trace must not be truncated without max_cycles"
+    );
+    assert!(
+        trace
+            .events
+            .iter()
+            .any(|e| matches!(e.kind, TraceEventKind::GateCompleted { .. })),
+        "gate must complete when max_cycles is None"
+    );
+}
+
+/// 12. max_cycles larger than actual simulation length does not truncate.
+#[test]
+fn max_cycles_larger_than_needed() {
+    let mut hw = cultivation_hw();
+    hw.injection.error_probability = 0.0;
+    let circuit = validated(circuit_clifford());
+    let config = EngineConfig {
+        seed: 0,
+        max_cycles: Some(1_000_000),
+    };
+
+    let trace = Engine::new(&circuit, &hw, config).unwrap().run();
+
+    assert!(
+        !trace.truncated,
+        "trace must not be truncated when max_cycles exceeds actual simulation length"
+    );
+}
+
+/// 13. Hook-activated T-gate can trigger injection error + fixup.
+///
+/// Verifies the interaction: measurement → hook activates T-gate → T-gate
+/// may trigger injection error → fixup inserted and completed.
+#[test]
+fn hook_activates_t_gate_with_injection() {
+    let circuit = validated(pirx_testkit::hook_activates_t_gate());
+
+    // Find a seed where: outcome=One (T-gate activated) AND injection fires.
+    let trace = (0u64..500)
+        .find_map(|seed| {
+            let mut hw = cultivation_hw();
+            hw.buffer.preload = 1;
+            let t = Engine::new(
+                &circuit,
+                &hw,
+                EngineConfig {
+                    seed,
+                    max_cycles: None,
+                },
+            )
+            .unwrap()
+            .run();
+
+            let has_activation = t
+                .events
+                .iter()
+                .any(|e| matches!(e.kind, TraceEventKind::OpsActivated { .. }));
+            let has_injection = t
+                .events
+                .iter()
+                .any(|e| matches!(e.kind, TraceEventKind::InjectionError { .. }));
+
+            if has_activation && has_injection {
+                Some(t)
+            } else {
+                None
+            }
+        })
+        .expect("at least one seed in 0..500 must trigger hook activation + injection");
+
+    assert!(
+        trace
+            .events
+            .iter()
+            .any(|e| matches!(e.kind, TraceEventKind::FixupInserted { .. })),
+        "FixupInserted must follow injection on hook-activated T-gate"
+    );
+    assert!(
+        trace
+            .events
+            .iter()
+            .any(|e| matches!(e.kind, TraceEventKind::FixupCompleted { .. })),
+        "FixupCompleted must appear after fixup executes"
     );
 }

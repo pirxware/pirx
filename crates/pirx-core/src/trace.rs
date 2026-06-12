@@ -16,30 +16,73 @@ pub struct TraceEvent {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TraceEventKind {
     // Factory events
-    FactoryStarted { factory_id: u16 },
-    FactoryProduced { factory_id: u16 },
-    FactoryFailed { factory_id: u16 },
+    FactoryStarted {
+        factory_id: u16,
+    },
+    FactoryProduced {
+        factory_id: u16,
+    },
+    FactoryFailed {
+        factory_id: u16,
+    },
 
     // Gate lifecycle
-    GateReady { gate: u64 },
-    GateScheduled { gate: u64 },
-    GateStalled { gate: u64 },
-    GateServed { gate: u64, wait: u32 },
-    GateCompleted { gate: u64 },
+    GateReady {
+        gate: u64,
+    },
+    GateScheduled {
+        gate: u64,
+    },
+    GateStalled {
+        gate: u64,
+    },
+    GateServed {
+        gate: u64,
+        wait: u32,
+    },
+    GateCompleted {
+        gate: u64,
+    },
 
     // Injection errors
-    InjectionError { gate: u64 },
-    FixupInserted { fixup: u64, original: u64 },
-    FixupCompleted { fixup: u64 },
+    InjectionError {
+        gate: u64,
+    },
+    FixupInserted {
+        fixup: u64,
+        original: u64,
+    },
+    FixupCompleted {
+        fixup: u64,
+    },
 
     // Buffer
-    BufferEnqueue { occupancy: u32 },
-    BufferDequeue { occupancy: u32 },
+    BufferEnqueue {
+        occupancy: u32,
+    },
+    BufferDequeue {
+        occupancy: u32,
+    },
     BufferFull,
 
     // Routing (scalar model: latency events)
-    RoutingStarted { gate: u64 },
-    RoutingCompleted { gate: u64, latency: u32 },
+    RoutingStarted {
+        gate: u64,
+    },
+    RoutingCompleted {
+        gate: u64,
+        latency: u32,
+    },
+
+    // Measurement hooks
+    MeasurementOutcome {
+        gate: u64,
+        outcome: pirx_ir::circuit::MeasurementOutcome,
+    },
+    OpsActivated {
+        gate: u64,
+        activated_count: u32,
+    },
 }
 
 /// Complete execution trace — the primary output of the engine.
@@ -53,6 +96,9 @@ pub struct Trace {
     pub events: Vec<TraceEvent>,
     pub seed: u64,
     pub total_cycles: u64,
+    /// True if simulation was stopped by `max_cycles` before all ops completed.
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 /// Append-only event accumulator used inside the simulation hot loop.
@@ -85,6 +131,18 @@ impl TraceCollector {
             events: self.events,
             seed,
             total_cycles,
+            truncated: false,
+        }
+    }
+
+    /// Seal the event stream as a truncated trace (stopped by `max_cycles`).
+    pub fn finish_truncated(self, seed: u64, total_cycles: u64) -> Trace {
+        Trace {
+            schema_version: "1.0".to_owned(),
+            events: self.events,
+            seed,
+            total_cycles,
+            truncated: true,
         }
     }
 }
@@ -112,6 +170,23 @@ mod tests {
         let trace = collector.finish(0, 2);
         let cycles: Vec<u64> = trace.events.iter().map(|e| e.cycle).collect();
         assert_eq!(cycles, [0, 1, 2]);
+    }
+
+    #[test]
+    fn finish_truncated_sets_flag() {
+        let mut collector = TraceCollector::new(2);
+        collector.record(0, TraceEventKind::GateReady { gate: 1 });
+        let trace = collector.finish_truncated(7, 10);
+        assert!(trace.truncated);
+        assert_eq!(trace.seed, 7);
+        assert_eq!(trace.total_cycles, 10);
+    }
+
+    #[test]
+    fn finish_normal_is_not_truncated() {
+        let collector = TraceCollector::new(0);
+        let trace = collector.finish(0, 5);
+        assert!(!trace.truncated);
     }
 
     #[test]

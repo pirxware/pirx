@@ -19,13 +19,16 @@ fn bench_engine_new(c: &mut Criterion) {
     group.sampling_mode(SamplingMode::Auto);
 
     for &size in &[10u32, 100, 500, 2000] {
-        let circuit = pirx_testkit::t_gate_chain(size);
+        let circuit = pirx_testkit::validated(pirx_testkit::t_gate_chain(size));
         group.bench_with_input(BenchmarkId::from_parameter(size), &circuit, |b, circuit| {
             b.iter(|| {
                 Engine::new(
                     circuit,
                     &pirx_testkit::cultivation_hw(),
-                    EngineConfig { seed: SEED },
+                    EngineConfig {
+                        seed: SEED,
+                        max_cycles: None,
+                    },
                 )
                 .unwrap()
             });
@@ -40,14 +43,22 @@ fn bench_engine_run(c: &mut Criterion) {
     group.sampling_mode(SamplingMode::Auto);
 
     for &size in &[10u32, 100, 500] {
-        let circuit = pirx_testkit::t_gate_chain(size);
+        let circuit = pirx_testkit::validated(pirx_testkit::t_gate_chain(size));
         // Warm start: pre-load buffer so the run isn't dominated by initial stall.
         let mut hw = pirx_testkit::cultivation_hw();
         hw.buffer.preload = 4;
 
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, _| {
             b.iter(|| {
-                let engine = Engine::new(&circuit, &hw, EngineConfig { seed: SEED }).unwrap();
+                let engine = Engine::new(
+                    &circuit,
+                    &hw,
+                    EngineConfig {
+                        seed: SEED,
+                        max_cycles: None,
+                    },
+                )
+                .unwrap();
                 engine.run()
             });
         });
@@ -61,12 +72,19 @@ fn bench_analysis(c: &mut Criterion) {
     group.sampling_mode(SamplingMode::Auto);
 
     for &size in &[10u32, 100, 500] {
-        let circuit = pirx_testkit::t_gate_chain(size);
+        let circuit = pirx_testkit::validated(pirx_testkit::t_gate_chain(size));
         let mut hw = pirx_testkit::cultivation_hw();
         hw.buffer.preload = 4;
-        let trace = Engine::new(&circuit, &hw, EngineConfig { seed: SEED })
-            .unwrap()
-            .run();
+        let trace = Engine::new(
+            &circuit,
+            &hw,
+            EngineConfig {
+                seed: SEED,
+                max_cycles: None,
+            },
+        )
+        .unwrap()
+        .run();
 
         group.bench_with_input(BenchmarkId::new("analyze", size), &trace, |b, trace| {
             b.iter(|| ProfileAnalyzer::analyze(trace, 1, 10));
@@ -77,13 +95,23 @@ fn bench_analysis(c: &mut Criterion) {
 }
 
 fn bench_engine_step(c: &mut Criterion) {
-    let circuit = pirx_testkit::t_gate_chain(100);
+    let circuit = pirx_testkit::validated(pirx_testkit::t_gate_chain(100));
     let mut hw = pirx_testkit::cultivation_hw();
     hw.buffer.preload = 4;
 
     c.bench_function("engine_step_single", |b| {
         b.iter_batched(
-            || Engine::new(&circuit, &hw, EngineConfig { seed: SEED }).unwrap(),
+            || {
+                Engine::new(
+                    &circuit,
+                    &hw,
+                    EngineConfig {
+                        seed: SEED,
+                        max_cycles: None,
+                    },
+                )
+                .unwrap()
+            },
             |mut engine| engine.step(),
             codspeed_criterion_compat::BatchSize::SmallInput,
         );

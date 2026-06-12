@@ -116,6 +116,7 @@ pub struct Engine {
     event_queue: EventQueue,
     current_cycle: u64,
     rng: ChaCha12Rng,
+    factory_rngs: Vec<ChaCha12Rng>,
     seed: u64,
     max_cycles: Option<u64>,
 
@@ -191,8 +192,20 @@ impl Engine {
         // Initialize buffer.
         let buffer = MagicStateBuffer::new(hw.buffer.capacity, hw.buffer.preload);
 
-        // Seed RNG — all stochastic decisions flow through this reference.
-        let mut rng = ChaCha12Rng::seed_from_u64(config.seed);
+        // Master RNG for injection errors and measurement hooks.
+        let rng = ChaCha12Rng::seed_from_u64(config.seed);
+
+        // Per-factory child RNGs: deterministic derivation from master seed
+        // so factory N's sequence is stable regardless of total factory count.
+        let mut factory_rngs: Vec<ChaCha12Rng> = (0..factory_count)
+            .map(|i| {
+                let factory_seed = config
+                    .seed
+                    .wrapping_add(i as u64)
+                    .wrapping_mul(0x9E37_79B9_7F4A_7C15);
+                ChaCha12Rng::seed_from_u64(factory_seed)
+            })
+            .collect();
 
         // Build initial ready set: all ops with predecessor_count == 0.
         let mut ready_set = Box::new(FifoReadyQueue::with_capacity(n_ops)) as Box<dyn ReadyQueue>;
@@ -242,7 +255,8 @@ impl Engine {
             #[allow(clippy::cast_possible_truncation)]
             let factory_id = id as u16;
             trace.record(0, TraceEventKind::FactoryStarted { factory_id });
-            let outcome = factory.schedule_production(0, &mut rng);
+            #[allow(clippy::indexing_slicing)]
+            let outcome = factory.schedule_production(0, &mut factory_rngs[id]);
             let (event_cycle, event) = match outcome {
                 FactoryOutcome::Produced { completion_cycle } => (
                     completion_cycle,
@@ -266,6 +280,7 @@ impl Engine {
             event_queue,
             current_cycle: 0,
             rng,
+            factory_rngs,
             seed: config.seed,
             max_cycles: config.max_cycles,
             stalled_gates: VecDeque::new(),
@@ -620,10 +635,11 @@ impl Engine {
         if idx >= self.factories.len() {
             return;
         }
-        // Split borrow: factories[idx] and rng are different fields.
+        // Split borrow: factories[idx] and factory_rngs[idx] are different fields.
         // idx is bounds-checked above, so indexing cannot panic.
         #[allow(clippy::indexing_slicing)]
-        let outcome = self.factories[idx].schedule_production(current_cycle, &mut self.rng);
+        let outcome =
+            self.factories[idx].schedule_production(current_cycle, &mut self.factory_rngs[idx]);
         let (event_cycle, event) = match outcome {
             FactoryOutcome::Produced { completion_cycle } => (
                 completion_cycle,

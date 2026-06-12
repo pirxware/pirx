@@ -145,6 +145,55 @@ proptest! {
         );
     }
 
+    /// Factory 0's production sequence is identical regardless of total factory count.
+    ///
+    /// Per-factory child RNGs are derived deterministically from the master seed.
+    /// Adding factories must not reshuffle factory 0's random draws.
+    /// Uses a long chain so both runs need many factory productions.
+    #[test]
+    fn factory_rng_isolation(seed in 0u64..5_000) {
+        let circuit = pirx_testkit::validated(pirx_testkit::t_gate_chain(100));
+        let mut hw1 = pirx_testkit::cultivation_hw();
+        hw1.factory = FactoryConfig::Cultivation {
+            count: 1,
+            lambda_raw: 0.002,
+            fault_distance: 3,
+        };
+        hw1.buffer = BufferConfig { capacity: 32, preload: 0 };
+        hw1.injection.error_probability = 0.0;
+
+        let mut hw5 = hw1.clone();
+        hw5.factory = FactoryConfig::Cultivation {
+            count: 5,
+            lambda_raw: 0.002,
+            fault_distance: 3,
+        };
+
+        let config = EngineConfig { seed, max_cycles: None };
+        let t1 = Engine::new(&circuit, &hw1, config).unwrap().run();
+        let t5 = Engine::new(&circuit, &hw5, config).unwrap().run();
+
+        // Extract factory 0's production cycles from both traces.
+        let f0_cycles_1: Vec<u64> = t1.events.iter()
+            .filter(|e| matches!(e.kind, TraceEventKind::FactoryProduced { factory_id: 0 }))
+            .map(|e| e.cycle)
+            .collect();
+        let f0_cycles_5: Vec<u64> = t5.events.iter()
+            .filter(|e| matches!(e.kind, TraceEventKind::FactoryProduced { factory_id: 0 }))
+            .map(|e| e.cycle)
+            .collect();
+
+        // With 5 factories the run ends sooner; compare the overlap.
+        let compare_len = f0_cycles_1.len().min(f0_cycles_5.len()).min(10);
+        prop_assert!(compare_len > 0, "factory 0 must produce at least once");
+
+        prop_assert_eq!(
+            &f0_cycles_1[..compare_len],
+            &f0_cycles_5[..compare_len],
+            "factory 0 production cycles must be identical with 1 vs 5 factories"
+        );
+    }
+
     /// A pure-Clifford circuit never stalls, regardless of factory or buffer config.
     ///
     /// Cliffords don't consume magic states, so GateStalled must never appear.

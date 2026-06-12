@@ -56,6 +56,9 @@ pub struct Engine {
     pub(crate) seed: u64,
     pub(crate) max_cycles: Option<u64>,
 
+    // Classical feedback delay in QEC cycles (0 = instant activation).
+    pub(crate) feedback_delay: u64,
+
     // Stalled T-gates: ready but waiting for a magic state.
     pub(crate) stalled_gates: VecDeque<(OpKey, u64)>,
 
@@ -127,6 +130,11 @@ impl Engine {
 
         // Initialize buffer.
         let buffer = MagicStateBuffer::new(hw.buffer.capacity, hw.buffer.preload);
+
+        // Classical feedback delay: ceil(latency_us / cycle_time_us) cycles.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let feedback_delay =
+            (hw.timing.classical_feedback_latency_us / hw.timing.cycle_time_us).ceil() as u64;
 
         // Master RNG for injection errors and measurement hooks.
         let rng = ChaCha12Rng::seed_from_u64(config.seed);
@@ -208,6 +216,7 @@ impl Engine {
         Ok(Self {
             dag,
             ready_set,
+            feedback_delay,
             injection_error_probability: hw.injection.error_probability,
             factories,
             buffer,

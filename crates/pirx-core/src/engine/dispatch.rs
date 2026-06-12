@@ -5,7 +5,7 @@ use rand::Rng as _;
 
 use super::Engine;
 use crate::{
-    dag::OpKind,
+    dag::{OpKey, OpKind},
     events::{EngineEvent, TimedEvent},
     factory::FactoryOutcome,
     trace::{SYNTHETIC_ID_FLAG, TraceEventKind},
@@ -62,6 +62,13 @@ impl Engine {
                 }
                 self.complete_gate(gate, kind);
             }
+            EngineEvent::HookActivation {
+                gate,
+                hook_id,
+                outcome,
+            } => {
+                self.activate_hook(gate, hook_id, outcome);
+            }
         }
     }
 
@@ -108,8 +115,11 @@ impl Engine {
         }
     }
 
-    /// Sample a measurement outcome and activate the corresponding ops.
-    fn dispatch_hook(&mut self, gate: crate::dag::OpKey, hook_id: MeasurementHookId) {
+    /// Sample a measurement outcome and activate (or defer) the corresponding ops.
+    ///
+    /// `total_ops` is incremented immediately so the engine does not falsely
+    /// terminate before a deferred `HookActivation` fires.
+    fn dispatch_hook(&mut self, gate: OpKey, hook_id: MeasurementHookId) {
         let gate_id = self.trace_id(gate);
 
         let outcome = if self.rng.random::<bool>() {
@@ -125,6 +135,35 @@ impl Engine {
                 outcome,
             },
         );
+
+        // Count activated ops now so is_complete() waits for them.
+        let idx = hook_table_index(hook_id, outcome);
+        if let Some(to_activate) = self.hook_table.get(idx) {
+            self.total_ops += to_activate.len() as u64;
+        }
+
+        if self.feedback_delay == 0 {
+            self.activate_hook(gate, hook_id, outcome);
+        } else {
+            self.event_queue.schedule(
+                self.current_cycle + self.feedback_delay,
+                EngineEvent::HookActivation {
+                    gate,
+                    hook_id,
+                    outcome,
+                },
+            );
+        }
+    }
+
+    /// Activate ops for a resolved measurement hook.
+    fn activate_hook(
+        &mut self,
+        gate: OpKey,
+        hook_id: MeasurementHookId,
+        outcome: MeasurementOutcome,
+    ) {
+        let gate_id = self.trace_id(gate);
 
         let idx = hook_table_index(hook_id, outcome);
         let Some(to_activate) = self.hook_table.get(idx) else {
@@ -143,7 +182,6 @@ impl Engine {
 
         #[allow(clippy::cast_possible_truncation)]
         let activated_count = to_activate.len() as u32;
-        self.total_ops += u64::from(activated_count);
 
         self.trace.record(
             self.current_cycle,

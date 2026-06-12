@@ -61,15 +61,24 @@ impl Dag {
         // Map IR OpId → arena OpKey for building adjacency.
         let mut id_to_key: HashMap<OpId, OpKey> = HashMap::with_capacity(n);
 
+        // Measurement gates take ceil(measurement_time_us / cycle_time_us) QEC
+        // cycles. All other gates default to 1 cycle; routing overhead is added
+        // at scheduling time by the engine.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let measurement_cycles =
+            ((hw.timing.measurement_time_us / hw.timing.cycle_time_us).ceil() as u32).max(1);
+
         for op in &circuit.ops {
             let kind = ir_kind_to_engine(&op.kind, &mut angle_table)?;
+            let cycle_cost = if matches!(kind, OpKind::Measurement { .. }) {
+                measurement_cycles
+            } else {
+                1
+            };
             let key = ops.insert(OpData {
                 kind,
                 qubits: op.qubits.clone(),
-                // Default: 1 QEC round per gate. The Engine applies timing
-                // refinements (measurement latency, routing overhead) at
-                // scheduling time.
-                cycle_cost: 1,
+                cycle_cost,
                 active: op.initially_active,
             });
             successors.insert(key, SmallVec::new());

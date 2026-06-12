@@ -6,6 +6,8 @@
 
 use std::{cmp::Reverse, collections::BinaryHeap};
 
+use pirx_ir::circuit::{MeasurementHookId, MeasurementOutcome};
+
 use crate::dag::OpKey;
 
 /// An engine event — a deferred state transition completing in a future cycle.
@@ -21,6 +23,12 @@ pub enum EngineEvent {
     FactoryFailed { factory_id: u16 },
     /// A gate's cycle cost has elapsed — it completes.
     GateCompleted { gate: OpKey },
+    /// Deferred measurement hook activation after classical feedback delay.
+    HookActivation {
+        gate: OpKey,
+        hook_id: MeasurementHookId,
+        outcome: MeasurementOutcome,
+    },
 }
 
 /// A timestamped, sequenced engine event for priority-queue ordering.

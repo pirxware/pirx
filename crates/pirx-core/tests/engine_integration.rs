@@ -14,8 +14,11 @@ use pirx_core::{
     engine::{Engine, EngineConfig},
     trace::{SYNTHETIC_ID_FLAG, TraceEventKind},
 };
-use pirx_hw::model::{HardwareModel, load};
-use pirx_ir::circuit::{MeasurementOutcome, OpKind, Operation, ProfilerCircuit};
+use pirx_hw::model::{HardwareModel, TimingConfig, load};
+use pirx_ir::circuit::{
+    ConditionalActivation, Dependency, MeasurementHook, MeasurementOutcome, OpKind, Operation,
+    ProfilerCircuit,
+};
 use pirx_testkit::{
     blank_meta, clifford_t_measurement_chain, cultivation_hw, deterministic_distillation_hw,
     single_t_gate, two_parallel_t_gates, validated,
@@ -782,4 +785,224 @@ fn gate_lifecycle_ids_consistent() {
     assert_eq!(ready_ids, [777], "GateReady must carry OpId 777");
     assert_eq!(scheduled_ids, [777], "GateScheduled must carry OpId 777");
     assert_eq!(completed_ids, [777], "GateCompleted must carry OpId 777");
+}
+
+// ── Timing parameter tests ──────────────────────────────────────────────────
+
+/// 17. Measurement gate takes ceil(measurement_time_us / cycle_time_us) cycles.
+///
+/// With measurement_time_us=3.0, cycle_time_us=1.0, the measurement gate
+/// costs 3 QEC cycles. A chain Clifford(0) → Measurement(1) verifies that
+/// the measurement completes 3 cycles after the Clifford.
+#[test]
+fn measurement_timing_from_hardware_model() {
+    let mut hw = cultivation_hw();
+    hw.timing = TimingConfig {
+        cycle_time_us: 1.0,
+        measurement_time_us: 3.0,
+        classical_feedback_latency_us: 0.0,
+    };
+    hw.injection.error_probability = 0.0;
+
+    let circuit = validated(ProfilerCircuit {
+        ops: vec![
+            Operation {
+                id: 0,
+                kind: OpKind::Clifford,
+                qubits: smallvec![0],
+                initially_active: true,
+            },
+            Operation {
+                id: 1,
+                kind: OpKind::Measurement { hook: None },
+                qubits: smallvec![0],
+                initially_active: true,
+            },
+        ],
+        deps: vec![Dependency { from: 0, to: 1 }],
+        qubit_count: 1,
+        qubit_positions: None,
+        hooks: vec![],
+        metadata: blank_meta("measurement-timing"),
+    });
+
+    let trace = Engine::new(
+        &circuit,
+        &hw,
+        EngineConfig {
+            seed: 0,
+            max_cycles: None,
+        },
+    )
+    .unwrap()
+    .run();
+
+    let completed: Vec<(u64, u64)> = trace
+        .events
+        .iter()
+        .filter_map(|e| match e.kind {
+            TraceEventKind::GateCompleted { gate } => Some((e.cycle, gate)),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(completed.len(), 2, "Clifford + Measurement must complete");
+    let clifford_cycle = completed[0].0;
+    let measurement_cycle = completed[1].0;
+    assert_eq!(
+        measurement_cycle - clifford_cycle,
+        3,
+        "measurement must take 3 cycles (measurement_time_us=3.0, cycle_time_us=1.0)"
+    );
+}
+
+/// 18. Hook activation deferred by classical_feedback_latency_us.
+///
+/// With classical_feedback_latency_us=5.0, cycle_time_us=1.0, activated ops
+/// don't start until 5 cycles after the measurement completes.
+#[test]
+fn hook_deferred_by_feedback_latency() {
+    let mut hw = cultivation_hw();
+    hw.timing = TimingConfig {
+        cycle_time_us: 1.0,
+        measurement_time_us: 1.0,
+        classical_feedback_latency_us: 5.0,
+    };
+    hw.injection.error_probability = 0.0;
+
+    let circuit = validated(ProfilerCircuit {
+        ops: vec![
+            Operation {
+                id: 0,
+                kind: OpKind::Measurement { hook: Some(0) },
+                qubits: smallvec![0],
+                initially_active: true,
+            },
+            Operation {
+                id: 1,
+                kind: OpKind::Clifford,
+                qubits: smallvec![0],
+                initially_active: false,
+            },
+            Operation {
+                id: 2,
+                kind: OpKind::Clifford,
+                qubits: smallvec![0],
+                initially_active: false,
+            },
+        ],
+        deps: vec![Dependency { from: 0, to: 1 }, Dependency { from: 0, to: 2 }],
+        qubit_count: 1,
+        qubit_positions: None,
+        hooks: vec![MeasurementHook {
+            id: 0,
+            activations: vec![
+                ConditionalActivation {
+                    outcome: MeasurementOutcome::Zero,
+                    ops_to_activate: vec![1],
+                },
+                ConditionalActivation {
+                    outcome: MeasurementOutcome::One,
+                    ops_to_activate: vec![2],
+                },
+            ],
+        }],
+        metadata: blank_meta("feedback-delay"),
+    });
+
+    for seed in 0u64..100 {
+        let trace = Engine::new(
+            &circuit,
+            &hw,
+            EngineConfig {
+                seed,
+                max_cycles: None,
+            },
+        )
+        .unwrap()
+        .run();
+
+        let measurement_completed_cycle = trace
+            .events
+            .iter()
+            .find_map(|e| match e.kind {
+                TraceEventKind::GateCompleted { gate: 0 } => Some(e.cycle),
+                _ => None,
+            })
+            .expect("measurement must complete");
+
+        let activated_cycle = trace
+            .events
+            .iter()
+            .find_map(|e| match e.kind {
+                TraceEventKind::OpsActivated { .. } => Some(e.cycle),
+                _ => None,
+            })
+            .expect("hook must activate ops");
+
+        assert_eq!(
+            activated_cycle - measurement_completed_cycle,
+            5,
+            "activated ops must start 5 cycles after measurement completes (seed {seed})"
+        );
+    }
+}
+
+/// 19. Default timing (measurement_time_us=0.5, cycle_time_us=1.0) produces
+///     ceil(0.5) = 1 cycle for measurement gates — no behavior change.
+#[test]
+fn default_timing_measurement_one_cycle() {
+    let mut hw = cultivation_hw();
+    hw.injection.error_probability = 0.0;
+
+    let circuit = validated(ProfilerCircuit {
+        ops: vec![
+            Operation {
+                id: 0,
+                kind: OpKind::Clifford,
+                qubits: smallvec![0],
+                initially_active: true,
+            },
+            Operation {
+                id: 1,
+                kind: OpKind::Measurement { hook: None },
+                qubits: smallvec![0],
+                initially_active: true,
+            },
+        ],
+        deps: vec![Dependency { from: 0, to: 1 }],
+        qubit_count: 1,
+        qubit_positions: None,
+        hooks: vec![],
+        metadata: blank_meta("default-timing"),
+    });
+
+    let trace = Engine::new(
+        &circuit,
+        &hw,
+        EngineConfig {
+            seed: 0,
+            max_cycles: None,
+        },
+    )
+    .unwrap()
+    .run();
+
+    let completed: Vec<(u64, u64)> = trace
+        .events
+        .iter()
+        .filter_map(|e| match e.kind {
+            TraceEventKind::GateCompleted { gate } => Some((e.cycle, gate)),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(completed.len(), 2);
+    let clifford_cycle = completed[0].0;
+    let measurement_cycle = completed[1].0;
+    assert_eq!(
+        measurement_cycle - clifford_cycle,
+        1,
+        "default timing: measurement must take 1 cycle (ceil(0.5/1.0) = 1)"
+    );
 }

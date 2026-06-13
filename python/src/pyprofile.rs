@@ -78,6 +78,36 @@ impl PyExecutionProfile {
         self.inner.critical_path_extension
     }
 
+    #[getter]
+    fn p_logical(&self) -> f64 {
+        self.inner.p_logical
+    }
+
+    #[getter]
+    fn magic_states_consumed(&self) -> u64 {
+        self.inner.magic_states_consumed
+    }
+
+    #[getter]
+    fn total_infidelity(&self) -> f64 {
+        self.inner.total_infidelity
+    }
+
+    #[getter]
+    fn cumulative_magic_states<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        PyList::new(py, &self.inner.cumulative_magic_states)
+    }
+
+    #[getter]
+    fn cumulative_infidelity<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        PyList::new(py, &self.inner.cumulative_infidelity)
+    }
+
+    #[getter]
+    fn magic_states_per_bucket<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        PyList::new(py, &self.inner.magic_states_per_bucket)
+    }
+
     fn to_json(&self) -> PyResult<String> {
         serde_json::to_string_pretty(&self.inner).map_err(|e| ParseError::new_err(e.to_string()))
     }
@@ -91,10 +121,11 @@ impl PyExecutionProfile {
 
     fn __repr__(&self) -> String {
         format!(
-            "ExecutionProfile(cycles={}, stalls={}, fixups={})",
+            "ExecutionProfile(cycles={}, stalls={}, fixups={}, infidelity={:.2e})",
             self.inner.total_cycles,
             self.inner.stall_events.len(),
             self.inner.fixups_inserted,
+            self.inner.total_infidelity,
         )
     }
 }

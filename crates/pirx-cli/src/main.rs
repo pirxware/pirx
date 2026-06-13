@@ -114,11 +114,12 @@ fn run_profile(
     std::fs::write(output, &json)?;
 
     eprintln!(
-        "pirx: {} ops, {} cycles, {} stalls, {} fixups → {}",
+        "pirx: {} ops, {} cycles, {} stalls, {} fixups, infidelity={:.2e} → {}",
         validated.ops.len(),
         trace.total_cycles,
         profile.stall_events.len(),
         profile.fixups_inserted,
+        profile.total_infidelity,
         output.display(),
     );
 
@@ -197,6 +198,10 @@ fn run_monte_carlo_cmd(
     eprintln!(
         "Buffer full: mean={:.1} \u{00b1} {:.1}",
         result.buffer_full_events.mean, result.buffer_full_events.stddev,
+    );
+    eprintln!(
+        "Infidelity: mean={:.2e} \u{00b1} {:.2e}, p95={:.2e}",
+        result.total_infidelity.mean, result.total_infidelity.stddev, result.total_infidelity.p95,
     );
     eprintln!("Truncated: {}/{}", result.truncated_count, replicas,);
     eprintln!(

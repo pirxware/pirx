@@ -104,10 +104,23 @@ impl PyReplicaSummary {
         self.inner.buffer_full_events
     }
 
+    #[getter]
+    fn magic_states_consumed(&self) -> u64 {
+        self.inner.magic_states_consumed
+    }
+
+    #[getter]
+    fn total_infidelity(&self) -> f64 {
+        self.inner.total_infidelity
+    }
+
     fn __repr__(&self) -> String {
         format!(
-            "ReplicaSummary(seed={}, total_cycles={}, stalls={})",
-            self.inner.seed, self.inner.total_cycles, self.inner.stall_count
+            "ReplicaSummary(seed={}, total_cycles={}, stalls={}, infidelity={:.2e})",
+            self.inner.seed,
+            self.inner.total_cycles,
+            self.inner.stall_count,
+            self.inner.total_infidelity,
         )
     }
 }
@@ -182,6 +195,20 @@ impl PyMonteCarloResult {
     fn buffer_full_events(&self) -> PyDistribution {
         PyDistribution {
             inner: self.inner.buffer_full_events.clone(),
+        }
+    }
+
+    #[getter]
+    fn magic_states_consumed(&self) -> PyDistribution {
+        PyDistribution {
+            inner: self.inner.magic_states_consumed.clone(),
+        }
+    }
+
+    #[getter]
+    fn total_infidelity(&self) -> PyDistribution {
+        PyDistribution {
+            inner: self.inner.total_infidelity.clone(),
         }
     }
 

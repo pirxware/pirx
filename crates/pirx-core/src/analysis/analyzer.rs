@@ -36,7 +36,6 @@ impl ProfileAnalyzer {
         let mut fixups_inserted: u64 = 0;
         let mut critical_path_extension: u64 = 0;
         let mut magic_states_per_bucket = vec![0u64; num_buckets];
-        let mut total_magic_states: u64 = 0;
 
         // Per-factory start cycle for active-interval tracking.
         // Dense Vec indexed by factory_id — u16 keyspace, no hash overhead.
@@ -103,18 +102,21 @@ impl ProfileAnalyzer {
                     }
                 }
 
-                TraceEventKind::GateServed { gate, wait } => {
-                    if *wait > 0 {
-                        stall_events.push(StallRecord {
-                            cycle: event.cycle,
-                            gate_id: *gate,
-                            wait_cycles: u64::from(*wait),
-                        });
-                        if let Some(c) = stalls_in_bucket.get_mut(b) {
-                            *c = c.saturating_add(1);
-                        }
+                TraceEventKind::GateServed { gate, wait } if *wait > 0 => {
+                    stall_events.push(StallRecord {
+                        cycle: event.cycle,
+                        gate_id: *gate,
+                        wait_cycles: u64::from(*wait),
+                    });
+                    if let Some(c) = stalls_in_bucket.get_mut(b) {
+                        *c = c.saturating_add(1);
                     }
-                    total_magic_states = total_magic_states.saturating_add(1);
+                    if let Some(count) = magic_states_per_bucket.get_mut(b) {
+                        *count = count.saturating_add(1);
+                    }
+                }
+
+                TraceEventKind::GateServed { .. } => {
                     if let Some(count) = magic_states_per_bucket.get_mut(b) {
                         *count = count.saturating_add(1);
                     }
@@ -190,21 +192,22 @@ impl ProfileAnalyzer {
             })
             .collect();
 
-        // Cumulative magic state consumption and infidelity.
+        // Cumulative magic state consumption and infidelity — single fused pass.
         let p_logical = trace.p_logical;
+        let total_magic_states = trace.magic_states_consumed;
+        let total_infidelity = total_magic_states as f64 * p_logical;
         let mut cumulative_magic_states = vec![0u64; num_buckets];
+        let mut cumulative_infidelity = vec![0.0f64; num_buckets];
         let mut running_ms: u64 = 0;
         for (i, &count) in magic_states_per_bucket.iter().enumerate() {
             running_ms = running_ms.saturating_add(count);
             if let Some(slot) = cumulative_magic_states.get_mut(i) {
                 *slot = running_ms;
             }
+            if let Some(slot) = cumulative_infidelity.get_mut(i) {
+                *slot = running_ms as f64 * p_logical;
+            }
         }
-        let cumulative_infidelity: Vec<f64> = cumulative_magic_states
-            .iter()
-            .map(|&c| c as f64 * p_logical)
-            .collect();
-        let total_infidelity = total_magic_states as f64 * p_logical;
 
         ExecutionProfile {
             resolution,

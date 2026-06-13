@@ -61,7 +61,8 @@ jobs:
           toolchain: "1.88"
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - run: pip install maturin pytest
-      - run: cd python && maturin develop
+      - run: maturin build --manifest-path python/Cargo.toml --out dist
+      - run: pip install dist/*.whl
       - run: cd python && pytest tests/ -v
 
   audit:
@@ -82,6 +83,7 @@ jobs:
       - name: Cargo dependency freshness check
         run: |
           set -euo pipefail
+          ALLOW_FILE=".github/freshness-allow.toml"
           MIN_AGE_DAYS=7
           NOW=$(date +%s)
           FAIL_FILE=$(mktemp)
@@ -98,6 +100,12 @@ jobs:
                 /^version = "'"$version"'"/{v_ok=1}
                 /^source = /{if(n_ok&&v_ok) print; n_ok=0; v_ok=0}
               ' Cargo.lock 2>/dev/null)" 2>/dev/null && continue || true
+
+            # Skip packages explicitly allowed (security-motivated upgrades)
+            if [ -f "$ALLOW_FILE" ] && grep -qP "^\s*${name}\s*=\s*\"${version}\"" "$ALLOW_FILE" 2>/dev/null; then
+              echo "::notice::${name}@${version} exempt via ${ALLOW_FILE}"
+              continue
+            fi
 
             # Query crates.io for publish date of this exact version.
             # Download to file first — piping curl to python3 triggers the
@@ -124,6 +132,74 @@ jobs:
           [ "$FAIL" -eq 0 ] || {
             echo ""
             echo "Crate(s) above were published less than ${MIN_AGE_DAYS} days ago."
+            echo "Verify the release is legitimate before merging."
+            exit 1
+          }
+
+      # Same freshness gate for Python dependencies in python/uv.lock.
+      # Queries PyPI JSON API for each registry package.
+      - name: Python dependency freshness check
+        run: |
+          set -euo pipefail
+          ALLOW_FILE=".github/freshness-allow.toml"
+          LOCK="python/uv.lock"
+          [ -f "$LOCK" ] || { echo "No python/uv.lock — skipping"; exit 0; }
+
+          MIN_AGE_DAYS=7
+          NOW=$(date +%s)
+          FAIL_FILE=$(mktemp)
+          echo 0 > "$FAIL_FILE"
+
+          # Extract name+version pairs from registry packages only.
+          # Skip editable/path/git sources (local workspace packages).
+          while read -r name version; do
+            # Skip packages explicitly allowed (security-motivated upgrades)
+            if [ -f "$ALLOW_FILE" ] && grep -qP "^\s*${name}\s*=\s*\"${version}\"" "$ALLOW_FILE" 2>/dev/null; then
+              echo "::notice::${name}@${version} exempt via ${ALLOW_FILE}"
+              continue
+            fi
+
+            # Normalize name for PyPI API (PEP 503)
+            pypi_name=$(echo "$name" | tr '[:upper:]_' '[:lower:]-')
+
+            _tmp=$(mktemp)
+            curl -sf "https://pypi.org/pypi/${pypi_name}/${version}/json" \
+              -H "User-Agent: pirx-ci (supply-chain-check)" \
+              -o "$_tmp" || { rm -f "$_tmp"; continue; }
+            PUBLISHED=$(python3 -c "
+          import json
+          data = json.load(open('$_tmp'))
+          urls = data.get('urls', [])
+          if urls:
+              print(urls[0]['upload_time_iso_8601'])
+          " 2>/dev/null) || { rm -f "$_tmp"; continue; }
+            rm -f "$_tmp"
+
+            [ -n "$PUBLISHED" ] || continue
+            PUB_EPOCH=$(date -d "$PUBLISHED" +%s 2>/dev/null) || continue
+            AGE_DAYS=$(( (NOW - PUB_EPOCH) / 86400 ))
+
+            if [ "$AGE_DAYS" -lt "$MIN_AGE_DAYS" ]; then
+              echo "::error::${name}@${version} published ${AGE_DAYS}d ago (minimum: ${MIN_AGE_DAYS}d)"
+              echo 1 > "$FAIL_FILE"
+            fi
+          done < <(python3 -c "
+          import re
+          text = open('$LOCK').read()
+          for block in text.split('[[package]]')[1:]:
+              if 'registry' not in block:
+                  continue
+              nm = re.search(r'name\s*=\s*\"([^\"]+)\"', block)
+              vr = re.search(r'version\s*=\s*\"([^\"]+)\"', block)
+              if nm and vr:
+                  print(nm.group(1), vr.group(1))
+          " | sort -u)
+
+          FAIL=$(cat "$FAIL_FILE")
+          rm -f "$FAIL_FILE"
+          [ "$FAIL" -eq 0 ] || {
+            echo ""
+            echo "Python package(s) above were published less than ${MIN_AGE_DAYS} days ago."
             echo "Verify the release is legitimate before merging."
             exit 1
           }

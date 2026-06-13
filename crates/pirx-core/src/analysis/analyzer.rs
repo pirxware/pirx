@@ -111,9 +111,16 @@ impl ProfileAnalyzer {
                     if let Some(c) = stalls_in_bucket.get_mut(b) {
                         *c = c.saturating_add(1);
                     }
+                    if let Some(count) = magic_states_per_bucket.get_mut(b) {
+                        *count = count.saturating_add(1);
+                    }
                 }
 
-                TraceEventKind::GateServed { .. } => {}
+                TraceEventKind::GateServed { .. } => {
+                    if let Some(count) = magic_states_per_bucket.get_mut(b) {
+                        *count = count.saturating_add(1);
+                    }
+                }
 
                 TraceEventKind::InjectionError { .. } => {
                     injection_errors += 1;
@@ -155,17 +162,6 @@ impl ProfileAnalyzer {
             }
         }
 
-        // Per-bucket magic state histogram — dedicated pass to keep the main
-        // loop's zero-wait GateServed arm as a no-op.
-        for event in &trace.events {
-            if matches!(event.kind, TraceEventKind::GateServed { .. }) {
-                let b = to_bucket(event.cycle);
-                if let Some(count) = magic_states_per_bucket.get_mut(b) {
-                    *count = count.saturating_add(1);
-                }
-            }
-        }
-
         // Prefix-sum the difference array into per-bucket active counts.
         let fcount = f64::from(factory_count.max(1));
         let mut running: i64 = 0;
@@ -196,22 +192,27 @@ impl ProfileAnalyzer {
             })
             .collect();
 
-        // Cumulative magic state consumption and infidelity — single fused pass.
+        // Cumulative magic state consumption and infidelity derived via
+        // iterator collect — avoids two separate vec![0; n] allocations.
         let p_logical = trace.p_logical;
         let total_magic_states = trace.magic_states_consumed;
         let total_infidelity = total_magic_states as f64 * p_logical;
-        let mut cumulative_magic_states = vec![0u64; num_buckets];
-        let mut cumulative_infidelity = vec![0.0f64; num_buckets];
         let mut running_ms: u64 = 0;
-        for (i, &count) in magic_states_per_bucket.iter().enumerate() {
-            running_ms = running_ms.saturating_add(count);
-            if let Some(slot) = cumulative_magic_states.get_mut(i) {
-                *slot = running_ms;
-            }
-            if let Some(slot) = cumulative_infidelity.get_mut(i) {
-                *slot = running_ms as f64 * p_logical;
-            }
-        }
+        let cumulative_magic_states: Vec<u64> = magic_states_per_bucket
+            .iter()
+            .map(|&count| {
+                running_ms = running_ms.saturating_add(count);
+                running_ms
+            })
+            .collect();
+        let cumulative_infidelity: Vec<f64> = cumulative_magic_states
+            .iter()
+            .map(|&ms| {
+                #[allow(clippy::cast_precision_loss)]
+                let v = ms as f64 * p_logical;
+                v
+            })
+            .collect();
 
         ExecutionProfile {
             resolution,

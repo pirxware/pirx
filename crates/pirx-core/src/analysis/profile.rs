@@ -53,4 +53,16 @@ pub struct ExecutionProfile {
     pub fixups_inserted: u64,
     /// Sum of fixup durations: total cycles added to the circuit by injection errors.
     pub critical_path_extension: u64,
+    /// Logical error probability per consumed magic state.
+    pub p_logical: f64,
+    /// Total magic states consumed during simulation.
+    pub magic_states_consumed: u64,
+    /// Total accumulated infidelity: `magic_states_consumed × p_logical`.
+    pub total_infidelity: f64,
+    /// Per-bucket cumulative magic states consumed (running sum at bucket boundary).
+    pub cumulative_magic_states: Vec<u64>,
+    /// Per-bucket cumulative infidelity (running sum × p_logical).
+    pub cumulative_infidelity: Vec<f64>,
+    /// Per-bucket magic states consumed in this bucket.
+    pub magic_states_per_bucket: Vec<u64>,
 }

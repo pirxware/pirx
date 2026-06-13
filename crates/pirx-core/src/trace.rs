@@ -109,6 +109,12 @@ pub struct Trace {
     /// True if simulation was stopped by `max_cycles` before all ops completed.
     #[serde(default)]
     pub truncated: bool,
+    /// Logical error probability per consumed magic state, derived from QEC parameters.
+    #[serde(default)]
+    pub p_logical: f64,
+    /// Total magic states consumed during simulation.
+    #[serde(default)]
+    pub magic_states_consumed: u64,
 }
 
 /// Append-only event accumulator. Pre-allocated with a best-effort hint.
@@ -134,24 +140,40 @@ impl TraceCollector {
     }
 
     /// Seal the event stream into an immutable `Trace` artifact.
-    pub fn finish(self, seed: u64, total_cycles: u64) -> Trace {
+    pub fn finish(
+        self,
+        seed: u64,
+        total_cycles: u64,
+        p_logical: f64,
+        magic_states_consumed: u64,
+    ) -> Trace {
         Trace {
-            schema_version: "1.0".to_owned(),
+            schema_version: "1.1".to_owned(),
             events: self.events,
             seed,
             total_cycles,
             truncated: false,
+            p_logical,
+            magic_states_consumed,
         }
     }
 
     /// Seal the event stream as a truncated trace (stopped by `max_cycles`).
-    pub fn finish_truncated(self, seed: u64, total_cycles: u64) -> Trace {
+    pub fn finish_truncated(
+        self,
+        seed: u64,
+        total_cycles: u64,
+        p_logical: f64,
+        magic_states_consumed: u64,
+    ) -> Trace {
         Trace {
-            schema_version: "1.0".to_owned(),
+            schema_version: "1.1".to_owned(),
             events: self.events,
             seed,
             total_cycles,
             truncated: true,
+            p_logical,
+            magic_states_consumed,
         }
     }
 }
@@ -163,11 +185,11 @@ mod tests {
     #[test]
     fn empty_trace() {
         let collector = TraceCollector::new(0);
-        let trace = collector.finish(42, 0);
+        let trace = collector.finish(42, 0, 0.0, 0);
         assert!(trace.events.is_empty());
         assert_eq!(trace.seed, 42);
         assert_eq!(trace.total_cycles, 0);
-        assert_eq!(trace.schema_version, "1.0");
+        assert_eq!(trace.schema_version, "1.1");
     }
 
     #[test]
@@ -176,7 +198,7 @@ mod tests {
         collector.record(0, TraceEventKind::GateReady { gate: 1 });
         collector.record(1, TraceEventKind::GateScheduled { gate: 1 });
         collector.record(2, TraceEventKind::GateCompleted { gate: 1 });
-        let trace = collector.finish(0, 2);
+        let trace = collector.finish(0, 2, 0.0, 0);
         let cycles: Vec<u64> = trace.events.iter().map(|e| e.cycle).collect();
         assert_eq!(cycles, [0, 1, 2]);
     }
@@ -185,7 +207,7 @@ mod tests {
     fn finish_truncated_sets_flag() {
         let mut collector = TraceCollector::new(2);
         collector.record(0, TraceEventKind::GateReady { gate: 1 });
-        let trace = collector.finish_truncated(7, 10);
+        let trace = collector.finish_truncated(7, 10, 0.0, 0);
         assert!(trace.truncated);
         assert_eq!(trace.seed, 7);
         assert_eq!(trace.total_cycles, 10);
@@ -194,7 +216,7 @@ mod tests {
     #[test]
     fn finish_normal_is_not_truncated() {
         let collector = TraceCollector::new(0);
-        let trace = collector.finish(0, 5);
+        let trace = collector.finish(0, 5, 0.0, 0);
         assert!(!trace.truncated);
     }
 
@@ -206,6 +228,6 @@ mod tests {
             col.record(5, TraceEventKind::FactoryStarted { factory_id: 0 });
             col.record(7, TraceEventKind::FactoryProduced { factory_id: 0 });
         }
-        assert_eq!(a.finish(1, 10), b.finish(1, 10));
+        assert_eq!(a.finish(1, 10, 0.0, 0), b.finish(1, 10, 0.0, 0));
     }
 }

@@ -75,6 +75,12 @@ pub struct Engine {
     pub(crate) key_to_op_id: SecondaryMap<OpKey, u64>,
     pub(crate) next_synthetic_id: u64,
 
+    // Error budget tracking
+    /// Logical error probability per consumed magic state (from QecConfig).
+    pub(crate) p_logical: f64,
+    /// Running count of magic states consumed during simulation.
+    pub(crate) magic_states_consumed: u64,
+
     // Trace collection (append-only, pre-allocated)
     pub(crate) trace: TraceCollector,
 }
@@ -240,6 +246,8 @@ impl Engine {
             next_synthetic_id: 0,
             total_ops,
             completed_ops: 0,
+            p_logical: hw.qec.logical_error_rate(),
+            magic_states_consumed: 0,
             trace,
         })
     }
@@ -255,12 +263,22 @@ impl Engine {
                 // DES jumps between event cycles — check the *next* event's cycle
                 // before processing it, not current_cycle (which lags by one step).
                 if self.event_queue.peek_cycle().is_some_and(|c| c >= max) {
-                    return self.trace.finish_truncated(self.seed, self.current_cycle);
+                    return self.trace.finish_truncated(
+                        self.seed,
+                        self.current_cycle,
+                        self.p_logical,
+                        self.magic_states_consumed,
+                    );
                 }
             }
             self.step();
         }
-        self.trace.finish(self.seed, self.current_cycle)
+        self.trace.finish(
+            self.seed,
+            self.current_cycle,
+            self.p_logical,
+            self.magic_states_consumed,
+        )
     }
 
     /// Advance the simulation by one step (one event-cycle).

@@ -252,6 +252,7 @@ impl Engine {
                             wait: 0,
                         },
                     );
+                    self.magic_states_consumed = self.magic_states_consumed.saturating_add(1);
                     self.schedule_gate_completion(gate);
                 } else {
                     self.trace.record(
@@ -304,6 +305,7 @@ impl Engine {
                     wait,
                 },
             );
+            self.magic_states_consumed = self.magic_states_consumed.saturating_add(1);
             self.schedule_gate_completion(gate);
         }
     }

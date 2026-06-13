@@ -336,4 +336,76 @@ proptest! {
 
         prop_assert!(!trace.truncated, "must not truncate without max_cycles");
     }
+
+    // ── Error budget properties ──────────────────────────────────────────────
+
+    /// Total infidelity must always be non-negative.
+    #[test]
+    fn infidelity_non_negative(seed in 0u64..10_000, n in 1u32..20) {
+        let circuit = pirx_testkit::validated(pirx_testkit::t_gate_chain(n));
+        let hw = pirx_testkit::cultivation_hw();
+        let trace = Engine::new(&circuit, &hw, EngineConfig { seed, max_cycles: None })
+            .unwrap()
+            .run();
+
+        #[allow(clippy::cast_possible_truncation)]
+        let factory_count = hw.factory.count().min(u32::from(u16::MAX)) as u16;
+        let profile = pirx_core::ProfileAnalyzer::analyze(&trace, factory_count, 10);
+
+        prop_assert!(
+            profile.total_infidelity >= 0.0,
+            "total_infidelity ({}) must be non-negative",
+            profile.total_infidelity
+        );
+    }
+
+    /// Cumulative infidelity must be non-decreasing across buckets.
+    #[test]
+    fn cumulative_infidelity_monotonic(seed in 0u64..10_000) {
+        let circuit = pirx_testkit::validated(pirx_testkit::t_gate_chain(8));
+        let hw = pirx_testkit::cultivation_hw();
+        let trace = Engine::new(&circuit, &hw, EngineConfig { seed, max_cycles: None })
+            .unwrap()
+            .run();
+
+        #[allow(clippy::cast_possible_truncation)]
+        let factory_count = hw.factory.count().min(u32::from(u16::MAX)) as u16;
+        let profile = pirx_core::ProfileAnalyzer::analyze(&trace, factory_count, 5);
+
+        for w in profile.cumulative_infidelity.windows(2) {
+            prop_assert!(
+                w[1] >= w[0],
+                "cumulative_infidelity must be non-decreasing: {} followed by {}",
+                w[0], w[1]
+            );
+        }
+    }
+
+    /// magic_states_consumed equals exactly the number of GateServed events
+    /// (only T-gates and rotations consume magic states, not fixups).
+    #[test]
+    fn magic_states_equals_gate_served_count(seed in 0u64..10_000, n in 1u32..20) {
+        let circuit = pirx_testkit::validated(pirx_testkit::t_gate_chain(n));
+        let hw = pirx_testkit::cultivation_hw();
+        let trace = Engine::new(&circuit, &hw, EngineConfig { seed, max_cycles: None })
+            .unwrap()
+            .run();
+
+        let gate_served_count = trace.events.iter()
+            .filter(|e| matches!(e.kind, TraceEventKind::GateServed { .. }))
+            .count() as u64;
+
+        prop_assert_eq!(
+            trace.magic_states_consumed,
+            gate_served_count,
+            "magic_states_consumed must equal GateServed count"
+        );
+
+        // T-gates = n, fixups don't consume magic states.
+        prop_assert_eq!(
+            trace.magic_states_consumed,
+            u64::from(n),
+            "only original T-gates consume magic states"
+        );
+    }
 }

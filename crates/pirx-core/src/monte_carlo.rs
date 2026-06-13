@@ -75,6 +75,10 @@ pub struct ReplicaSummary {
     pub mean_factory_utilization: f64,
     /// Number of `BufferFull` events (factory produced but buffer was at capacity).
     pub buffer_full_events: u64,
+    /// Total magic states consumed during this replica.
+    pub magic_states_consumed: u64,
+    /// Total accumulated infidelity: `magic_states_consumed × p_logical`.
+    pub total_infidelity: f64,
 }
 
 // ── Distribution statistics ──────────────────────────────────────────────────
@@ -116,6 +120,10 @@ pub struct MonteCarloResult {
     pub mean_factory_utilization: Distribution,
     /// Distribution of buffer-full event counts.
     pub buffer_full_events: Distribution,
+    /// Distribution of magic states consumed.
+    pub magic_states_consumed: Distribution,
+    /// Distribution of total accumulated infidelity.
+    pub total_infidelity: Distribution,
     /// Number of replicas truncated by `max_cycles`.
     pub truncated_count: u32,
     /// Configuration used for this run.
@@ -229,6 +237,7 @@ fn extract_summary(trace: &Trace, seed: u64, factory_count: u16) -> ReplicaSumma
     let mut injection_errors: u64 = 0;
     let mut fixups_inserted: u64 = 0;
     let mut buffer_full_events: u64 = 0;
+    let mut magic_states_consumed: u64 = 0;
 
     let mut total_factory_active_cycles: u64 = 0;
     let mut factory_starts: Vec<Option<u64>> = vec![None; usize::from(factory_count)];
@@ -242,6 +251,7 @@ fn extract_summary(trace: &Trace, seed: u64, factory_count: u16) -> ReplicaSumma
                     total_stall_cycles = total_stall_cycles.saturating_add(w);
                     max_stall_cycles = max_stall_cycles.max(w);
                 }
+                magic_states_consumed = magic_states_consumed.saturating_add(1);
             }
             TraceEventKind::InjectionError { .. } => injection_errors += 1,
             TraceEventKind::FixupInserted { .. } => fixups_inserted += 1,
@@ -291,6 +301,8 @@ fn extract_summary(trace: &Trace, seed: u64, factory_count: u16) -> ReplicaSumma
         fixups_inserted,
         mean_factory_utilization: mean_utilization,
         buffer_full_events,
+        magic_states_consumed,
+        total_infidelity: magic_states_consumed as f64 * trace.p_logical,
     }
 }
 
@@ -308,6 +320,8 @@ fn aggregate(summaries: Vec<ReplicaSummary>, config: MonteCarloConfig) -> MonteC
     let fixups_inserted = distribution_from(&summaries, |s| s.fixups_inserted as f64);
     let mean_factory_utilization = distribution_from(&summaries, |s| s.mean_factory_utilization);
     let buffer_full_events = distribution_from(&summaries, |s| s.buffer_full_events as f64);
+    let magic_states_consumed = distribution_from(&summaries, |s| s.magic_states_consumed as f64);
+    let total_infidelity = distribution_from(&summaries, |s| s.total_infidelity);
 
     MonteCarloResult {
         replicas: summaries,
@@ -319,6 +333,8 @@ fn aggregate(summaries: Vec<ReplicaSummary>, config: MonteCarloConfig) -> MonteC
         fixups_inserted,
         mean_factory_utilization,
         buffer_full_events,
+        magic_states_consumed,
+        total_infidelity,
         truncated_count,
         config,
     }
@@ -441,7 +457,7 @@ mod tests {
     #[test]
     fn extract_summary_empty_trace() {
         let collector = TraceCollector::new(0);
-        let trace = collector.finish(0, 0);
+        let trace = collector.finish(0, 0, 0.0, 0);
         let summary = extract_summary(&trace, 0, 1);
 
         assert_eq!(summary.stall_count, 0);
@@ -450,6 +466,8 @@ mod tests {
         assert_eq!(summary.buffer_full_events, 0);
         assert_eq!(summary.total_cycles, 0);
         assert_eq!(summary.mean_factory_utilization, 0.0);
+        assert_eq!(summary.magic_states_consumed, 0);
+        assert_eq!(summary.total_infidelity, 0.0);
     }
 
     #[test]
@@ -458,12 +476,13 @@ mod tests {
         collector.record(10, TraceEventKind::GateServed { gate: 1, wait: 5 });
         collector.record(20, TraceEventKind::GateServed { gate: 2, wait: 10 });
         collector.record(30, TraceEventKind::GateServed { gate: 3, wait: 0 });
-        let trace = collector.finish(42, 30);
+        let trace = collector.finish(42, 30, 0.0, 3);
         let summary = extract_summary(&trace, 42, 1);
 
         assert_eq!(summary.stall_count, 2);
         assert_eq!(summary.total_stall_cycles, 15);
         assert_eq!(summary.max_stall_cycles, 10);
+        assert_eq!(summary.magic_states_consumed, 3);
     }
 
     #[test]
@@ -472,7 +491,7 @@ mod tests {
         // Factory 0 active from cycle 0 to cycle 50.
         collector.record(0, TraceEventKind::FactoryStarted { factory_id: 0 });
         collector.record(50, TraceEventKind::FactoryProduced { factory_id: 0 });
-        let trace = collector.finish(0, 100);
+        let trace = collector.finish(0, 100, 0.0, 0);
         let summary = extract_summary(&trace, 0, 1);
 
         // 50 active cycles out of 100 total, 1 factory → 0.5.
@@ -498,7 +517,7 @@ mod tests {
                 original: 2,
             },
         );
-        let trace = collector.finish(0, 20);
+        let trace = collector.finish(0, 20, 0.0, 0);
         let summary = extract_summary(&trace, 0, 1);
 
         assert_eq!(summary.injection_errors, 2);
@@ -511,7 +530,7 @@ mod tests {
         collector.record(10, TraceEventKind::BufferFull);
         collector.record(20, TraceEventKind::BufferFull);
         collector.record(30, TraceEventKind::BufferFull);
-        let trace = collector.finish(0, 30);
+        let trace = collector.finish(0, 30, 0.0, 0);
         let summary = extract_summary(&trace, 0, 1);
 
         assert_eq!(summary.buffer_full_events, 3);
@@ -531,6 +550,8 @@ mod tests {
             fixups_inserted: 0,
             mean_factory_utilization: 0.0,
             buffer_full_events: 0,
+            magic_states_consumed: 0,
+            total_infidelity: 0.0,
         }
     }
 }

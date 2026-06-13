@@ -1107,3 +1107,185 @@ fn rz_synthesis_toml_loads() {
     let hw = rz_synthesis_hw_toml();
     assert_eq!(hw.meta.name, "surface_code_d17_rz_synthesis_8fac");
 }
+
+// ── Error budget tracking ────────────────────────────────────────────────────
+
+/// 24. Single T-gate → exactly 1 magic state consumed, infidelity = p_logical.
+#[test]
+fn error_budget_single_t_gate() {
+    let circuit = validated(single_t_gate());
+    let mut hw = cultivation_hw();
+    hw.injection.error_probability = 0.0;
+    hw.buffer.preload = 1;
+    let config = EngineConfig {
+        seed: 42,
+        max_cycles: None,
+    };
+    let trace = Engine::new(&circuit, &hw, config).unwrap().run();
+    assert_eq!(trace.magic_states_consumed, 1);
+    let expected_p = hw.qec.logical_error_rate();
+    assert!(
+        (trace.p_logical - expected_p).abs() < f64::EPSILON,
+        "p_logical mismatch: trace={}, expected={}",
+        trace.p_logical,
+        expected_p,
+    );
+}
+
+/// 25. Chain of 5 T-gates → magic_states_consumed = 5 (no injection errors).
+#[test]
+fn error_budget_chain_of_t_gates() {
+    use pirx_testkit::t_gate_chain;
+    let circuit = validated(t_gate_chain(5));
+    let mut hw = cultivation_hw();
+    hw.injection.error_probability = 0.0;
+    hw.buffer.preload = 4;
+    let config = EngineConfig {
+        seed: 0,
+        max_cycles: None,
+    };
+    let trace = Engine::new(&circuit, &hw, config).unwrap().run();
+    assert_eq!(trace.magic_states_consumed, 5);
+}
+
+/// 26. Clifford-only circuit → zero magic state consumption, zero infidelity.
+#[test]
+fn error_budget_clifford_only() {
+    use pirx_testkit::single_clifford;
+    let circuit = validated(single_clifford());
+    let hw = cultivation_hw();
+    let config = EngineConfig {
+        seed: 0,
+        max_cycles: None,
+    };
+    let trace = Engine::new(&circuit, &hw, config).unwrap().run();
+    assert_eq!(trace.magic_states_consumed, 0);
+    assert_eq!(trace.p_logical * trace.magic_states_consumed as f64, 0.0);
+}
+
+/// Fixups are lightweight corrections that don't consume magic states.
+/// Only original T-gates and rotations trigger GateServed (buffer dequeue).
+#[test]
+fn error_budget_with_fixups() {
+    use pirx_testkit::t_gate_chain;
+    let circuit = validated(t_gate_chain(10));
+    let mut hw = cultivation_hw();
+    hw.injection.error_probability = 1.0;
+    hw.buffer.preload = 4;
+    let config = EngineConfig {
+        seed: 0,
+        max_cycles: None,
+    };
+    let trace = Engine::new(&circuit, &hw, config).unwrap().run();
+    let fixup_count = trace
+        .events
+        .iter()
+        .filter(|e| matches!(e.kind, TraceEventKind::FixupInserted { .. }))
+        .count() as u64;
+    assert!(
+        fixup_count > 0,
+        "with injection_error_probability=1.0, fixups must be inserted"
+    );
+    // Fixups have OpKind::Fixup and skip the magic-state consumption path.
+    // Only original T-gates consume magic states.
+    assert_eq!(
+        trace.magic_states_consumed, 10,
+        "only original T-gates consume magic states, not fixups"
+    );
+}
+
+/// 28. Profile error budget: cumulative_infidelity is non-decreasing.
+#[test]
+fn error_budget_cumulative_monotonic() {
+    use pirx_testkit::t_gate_chain;
+    let circuit = validated(t_gate_chain(5));
+    let hw = cultivation_hw();
+    let config = EngineConfig {
+        seed: 7,
+        max_cycles: None,
+    };
+    let trace = Engine::new(&circuit, &hw, config).unwrap().run();
+    #[allow(clippy::cast_possible_truncation)]
+    let factory_count = hw.factory.count().min(u32::from(u16::MAX)) as u16;
+    let profile = pirx_core::ProfileAnalyzer::analyze(&trace, factory_count, 10);
+    for w in profile.cumulative_infidelity.windows(2) {
+        assert!(
+            w[1] >= w[0],
+            "cumulative_infidelity must be non-decreasing: {} < {}",
+            w[1],
+            w[0]
+        );
+    }
+}
+
+/// 29. Profile error budget: last cumulative value equals total.
+#[test]
+fn error_budget_final_equals_total() {
+    use pirx_testkit::t_gate_chain;
+    let circuit = validated(t_gate_chain(5));
+    let hw = cultivation_hw();
+    let config = EngineConfig {
+        seed: 1,
+        max_cycles: None,
+    };
+    let trace = Engine::new(&circuit, &hw, config).unwrap().run();
+    #[allow(clippy::cast_possible_truncation)]
+    let factory_count = hw.factory.count().min(u32::from(u16::MAX)) as u16;
+    let profile = pirx_core::ProfileAnalyzer::analyze(&trace, factory_count, 10);
+    let last = profile.cumulative_infidelity.last().copied().unwrap_or(0.0);
+    assert!(
+        (last - profile.total_infidelity).abs() < f64::EPSILON,
+        "last cumulative infidelity ({last}) must equal total ({})",
+        profile.total_infidelity,
+    );
+}
+
+/// 30. Profile error budget: sum of per-bucket equals total.
+#[test]
+fn error_budget_sum_matches_total() {
+    use pirx_testkit::t_gate_chain;
+    let circuit = validated(t_gate_chain(5));
+    let hw = cultivation_hw();
+    let config = EngineConfig {
+        seed: 3,
+        max_cycles: None,
+    };
+    let trace = Engine::new(&circuit, &hw, config).unwrap().run();
+    #[allow(clippy::cast_possible_truncation)]
+    let factory_count = hw.factory.count().min(u32::from(u16::MAX)) as u16;
+    let profile = pirx_core::ProfileAnalyzer::analyze(&trace, factory_count, 10);
+    let bucket_sum: u64 = profile.magic_states_per_bucket.iter().sum();
+    assert_eq!(
+        bucket_sum, profile.magic_states_consumed,
+        "sum of per-bucket magic states ({bucket_sum}) must equal total ({})",
+        profile.magic_states_consumed,
+    );
+}
+
+/// 31. Cumulative magic states vector lengths match other profile vectors.
+#[test]
+fn error_budget_vector_lengths() {
+    use pirx_testkit::t_gate_chain;
+    let circuit = validated(t_gate_chain(5));
+    let hw = cultivation_hw();
+    let config = EngineConfig {
+        seed: 0,
+        max_cycles: None,
+    };
+    let trace = Engine::new(&circuit, &hw, config).unwrap().run();
+    #[allow(clippy::cast_possible_truncation)]
+    let factory_count = hw.factory.count().min(u32::from(u16::MAX)) as u16;
+    let profile = pirx_core::ProfileAnalyzer::analyze(&trace, factory_count, 8);
+    assert_eq!(
+        profile.cumulative_magic_states.len(),
+        profile.factory_utilization.len(),
+    );
+    assert_eq!(
+        profile.cumulative_infidelity.len(),
+        profile.factory_utilization.len(),
+    );
+    assert_eq!(
+        profile.magic_states_per_bucket.len(),
+        profile.factory_utilization.len(),
+    );
+}

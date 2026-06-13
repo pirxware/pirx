@@ -5,7 +5,7 @@ use smallvec::SmallVec;
 use super::{
     Dag,
     kind::{OpData, OpKey, OpKind},
-    ready_queue::ReadyQueue,
+    ready_queue::{FifoReadyQueue, ReadyQueue},
 };
 
 impl Dag {
@@ -13,7 +13,7 @@ impl Dag {
     ///
     /// Any successor whose count reaches zero is pushed onto `queue` (it is
     /// now ready to execute).
-    pub fn release_successors(&mut self, gate: OpKey, queue: &mut dyn ReadyQueue) {
+    pub fn release_successors(&mut self, gate: OpKey, queue: &mut FifoReadyQueue) {
         // Split-borrow: ops, successors, and predecessor_count are disjoint
         // fields; Rust NLL tracks them independently.
         let ops = &self.ops;
@@ -45,7 +45,7 @@ impl Dag {
         &mut self,
         op_keys: &[OpKey],
         completed: &impl Fn(OpKey) -> bool,
-        queue: &mut dyn ReadyQueue,
+        queue: &mut FifoReadyQueue,
     ) {
         for &key in op_keys {
             if let Some(op) = self.ops.get_mut(key) {
@@ -74,7 +74,7 @@ impl Dag {
     /// their predecessor changes, not the count. Fixup's `predecessor_count`
     /// is set to 0 because `gate` has already completed, making fixup
     /// immediately ready.
-    pub fn inject_fixup(&mut self, gate: OpKey, queue: &mut dyn ReadyQueue) -> OpKey {
+    pub fn inject_fixup(&mut self, gate: OpKey, queue: &mut FifoReadyQueue) -> OpKey {
         debug_assert!(
             self.ops.contains_key(gate),
             "inject_fixup: invalid gate key"

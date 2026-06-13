@@ -40,9 +40,10 @@ impl RoutingModel for ManhattanRouting {
         let pos_a = positions.get(qa as usize);
         let pos_b = positions.get(qb as usize);
         match (pos_a, pos_b) {
-            (Some(&(ra, ca)), Some(&(rb, cb))) => {
-                (ra.abs_diff(rb) + ca.abs_diff(cb)) * self.cycles_per_hop
-            }
+            (Some(&(ra, ca)), Some(&(rb, cb))) => ra
+                .abs_diff(rb)
+                .saturating_add(ca.abs_diff(cb))
+                .saturating_mul(self.cycles_per_hop),
             _ => 0,
         }
     }
@@ -60,20 +61,35 @@ pub fn build_position_index(positions: &[GridPosition], qubit_count: u32) -> Vec
     idx
 }
 
+/// Enum dispatch for routing models — zero vtable overhead, inlineable.
+pub enum RoutingKind {
+    Scalar(ScalarRouting),
+    Manhattan(ManhattanRouting),
+}
+
+impl RoutingModel for RoutingKind {
+    fn latency(&self, qubits: &[QubitId], positions: &PositionIndex) -> u32 {
+        match self {
+            Self::Scalar(r) => r.latency(qubits, positions),
+            Self::Manhattan(r) => r.latency(qubits, positions),
+        }
+    }
+}
+
 /// Build routing model from config. Scalar converts `overhead_fraction`
 /// to a fixed cycle count (fraction × 10, rounded up).
-pub fn from_config(config: &RoutingConfig) -> Box<dyn RoutingModel> {
+pub fn from_config(config: &RoutingConfig) -> RoutingKind {
     match config {
         RoutingConfig::Scalar { overhead_fraction } => {
-            // overhead_fraction is validated to [0.0, 1.0] by
-            // HardwareModel::validate(), so the product is in [0.0, 10.0].
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let overhead_cycles = (*overhead_fraction * 10.0).ceil() as u32;
-            Box::new(ScalarRouting { overhead_cycles })
+            RoutingKind::Scalar(ScalarRouting { overhead_cycles })
         }
-        RoutingConfig::Manhattan { cycles_per_hop, .. } => Box::new(ManhattanRouting {
-            cycles_per_hop: *cycles_per_hop,
-        }),
+        RoutingConfig::Manhattan { cycles_per_hop, .. } => {
+            RoutingKind::Manhattan(ManhattanRouting {
+                cycles_per_hop: *cycles_per_hop,
+            })
+        }
     }
 }
 

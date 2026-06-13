@@ -1208,7 +1208,8 @@ fn error_budget_cumulative_monotonic() {
     #[allow(clippy::cast_possible_truncation)]
     let factory_count = hw.factory.count().min(u32::from(u16::MAX)) as u16;
     let profile = pirx_core::ProfileAnalyzer::analyze(&trace, factory_count, 10);
-    for w in profile.cumulative_infidelity.windows(2) {
+    let cumulative = profile.cumulative_infidelity();
+    for w in cumulative.windows(2) {
         assert!(
             w[1] >= w[0],
             "cumulative_infidelity must be non-decreasing: {} < {}",
@@ -1232,7 +1233,8 @@ fn error_budget_final_equals_total() {
     #[allow(clippy::cast_possible_truncation)]
     let factory_count = hw.factory.count().min(u32::from(u16::MAX)) as u16;
     let profile = pirx_core::ProfileAnalyzer::analyze(&trace, factory_count, 10);
-    let last = profile.cumulative_infidelity.last().copied().unwrap_or(0.0);
+    let cumulative = profile.cumulative_infidelity();
+    let last = cumulative.last().copied().unwrap_or(0.0);
     assert!(
         (last - profile.total_infidelity).abs() < f64::EPSILON,
         "last cumulative infidelity ({last}) must equal total ({})",
@@ -1277,11 +1279,11 @@ fn error_budget_vector_lengths() {
     let factory_count = hw.factory.count().min(u32::from(u16::MAX)) as u16;
     let profile = pirx_core::ProfileAnalyzer::analyze(&trace, factory_count, 8);
     assert_eq!(
-        profile.cumulative_magic_states.len(),
+        profile.cumulative_magic_states().len(),
         profile.factory_utilization.len(),
     );
     assert_eq!(
-        profile.cumulative_infidelity.len(),
+        profile.cumulative_infidelity().len(),
         profile.factory_utilization.len(),
     );
     assert_eq!(

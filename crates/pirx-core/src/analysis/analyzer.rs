@@ -102,21 +102,17 @@ impl ProfileAnalyzer {
                     }
                 }
 
-                TraceEventKind::GateServed { gate, wait } if *wait > 0 => {
-                    stall_events.push(StallRecord {
-                        cycle: event.cycle,
-                        gate_id: *gate,
-                        wait_cycles: u64::from(*wait),
-                    });
-                    if let Some(c) = stalls_in_bucket.get_mut(b) {
-                        *c = c.saturating_add(1);
+                TraceEventKind::GateServed { gate, wait } => {
+                    if *wait > 0 {
+                        stall_events.push(StallRecord {
+                            cycle: event.cycle,
+                            gate_id: *gate,
+                            wait_cycles: u64::from(*wait),
+                        });
+                        if let Some(c) = stalls_in_bucket.get_mut(b) {
+                            *c = c.saturating_add(1);
+                        }
                     }
-                    if let Some(count) = magic_states_per_bucket.get_mut(b) {
-                        *count = count.saturating_add(1);
-                    }
-                }
-
-                TraceEventKind::GateServed { .. } => {
                     if let Some(count) = magic_states_per_bucket.get_mut(b) {
                         *count = count.saturating_add(1);
                     }
@@ -192,27 +188,10 @@ impl ProfileAnalyzer {
             })
             .collect();
 
-        // Cumulative magic state consumption and infidelity derived via
-        // iterator collect — avoids two separate vec![0; n] allocations.
         let p_logical = trace.p_logical;
         let total_magic_states = trace.magic_states_consumed;
+        #[allow(clippy::cast_precision_loss)]
         let total_infidelity = total_magic_states as f64 * p_logical;
-        let mut running_ms: u64 = 0;
-        let cumulative_magic_states: Vec<u64> = magic_states_per_bucket
-            .iter()
-            .map(|&count| {
-                running_ms = running_ms.saturating_add(count);
-                running_ms
-            })
-            .collect();
-        let cumulative_infidelity: Vec<f64> = cumulative_magic_states
-            .iter()
-            .map(|&ms| {
-                #[allow(clippy::cast_precision_loss)]
-                let v = ms as f64 * p_logical;
-                v
-            })
-            .collect();
 
         ExecutionProfile {
             resolution,
@@ -227,8 +206,6 @@ impl ProfileAnalyzer {
             p_logical,
             magic_states_consumed: total_magic_states,
             total_infidelity,
-            cumulative_magic_states,
-            cumulative_infidelity,
             magic_states_per_bucket,
         }
     }

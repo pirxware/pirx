@@ -3,7 +3,7 @@
 use pirx_ir::circuit::{MeasurementHookId, OpId};
 use thiserror::Error;
 
-use crate::{dag::DagError, factory::FactoryError};
+use crate::dag::DagError;
 
 /// Configuration for [`Engine`](super::Engine) construction.
 #[derive(Debug, Clone, Copy)]
@@ -29,9 +29,6 @@ pub enum EngineError {
 
     #[error("buffer capacity is zero")]
     ZeroBuffer,
-
-    #[error("factory creation failed: {0}")]
-    FactoryCreation(#[from] FactoryError),
 
     #[error("manhattan routing requires qubit_positions in circuit")]
     MissingQubitPositions,

@@ -140,6 +140,35 @@ pub fn deterministic_distillation_hw(
     }
 }
 
+/// Single Rz synthesis factory, cold start.
+///
+/// mean_cycles=30.0, code_distance=17, injection p=0.5, fixup_cost=1,
+/// buffer capacity=4, preload=0.
+pub fn rz_synthesis_hw() -> HardwareModel {
+    HardwareModel {
+        meta: MetaConfig {
+            name: "test-rz-synthesis".into(),
+            description: String::new(),
+        },
+        qec: surface_code_qec(17),
+        timing: default_timing(),
+        factory: FactoryConfig::RzSynthesis {
+            count: 1,
+            distinct_angles: 1,
+            mean_cycles_per_state: 30.0,
+        },
+        injection: InjectionConfig {
+            error_probability: 0.5,
+            fixup_cost_cycles: 1,
+        },
+        routing: RoutingConfig::default(),
+        buffer: BufferConfig {
+            capacity: 4,
+            preload: 0,
+        },
+    }
+}
+
 /// Cultivation factory with Manhattan routing on a `width × height` grid.
 pub fn manhattan_hw(width: u32, height: u32) -> HardwareModel {
     HardwareModel {

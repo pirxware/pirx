@@ -7,19 +7,13 @@
 
 mod cultivation;
 mod distillation;
+mod rz_synthesis;
 
 pub use cultivation::CultivationFactory;
 pub use distillation::DistillationFactory;
 use pirx_hw::model::{FactoryConfig, QecConfig};
 use rand_chacha::ChaCha12Rng;
-use thiserror::Error;
-
-/// Errors that can occur during factory construction.
-#[derive(Debug, Error)]
-pub enum FactoryError {
-    #[error("Rz synthesis factory is not yet implemented")]
-    RzSynthesisNotImplemented,
-}
+pub use rz_synthesis::RzSynthesisFactory;
 
 /// Outcome of a single factory production attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +49,7 @@ pub trait FactoryModel: Send {
 pub enum FactoryKind {
     Distillation(DistillationFactory),
     Cultivation(CultivationFactory),
+    RzSynthesis(RzSynthesisFactory),
 }
 
 impl FactoryModel for FactoryKind {
@@ -62,6 +57,7 @@ impl FactoryModel for FactoryKind {
         match self {
             Self::Distillation(f) => f.schedule_production(current_cycle, rng),
             Self::Cultivation(f) => f.schedule_production(current_cycle, rng),
+            Self::RzSynthesis(f) => f.schedule_production(current_cycle, rng),
         }
     }
 
@@ -69,6 +65,7 @@ impl FactoryModel for FactoryKind {
         match self {
             Self::Distillation(f) => f.name(),
             Self::Cultivation(f) => f.name(),
+            Self::RzSynthesis(f) => f.name(),
         }
     }
 }
@@ -77,15 +74,7 @@ impl FactoryModel for FactoryKind {
 ///
 /// `qec.code_distance` is forwarded to cultivation factories, which divide
 /// raw exponential service times by the code distance to obtain scheduling cycles.
-///
-/// # Errors
-///
-/// Returns [`FactoryError::RzSynthesisNotImplemented`] if the hardware model
-/// specifies an Rz synthesis factory.
-pub fn create_factories(
-    config: &FactoryConfig,
-    qec: &QecConfig,
-) -> Result<Vec<FactoryKind>, FactoryError> {
+pub fn create_factories(config: &FactoryConfig, qec: &QecConfig) -> Vec<FactoryKind> {
     match config {
         FactoryConfig::Distillation {
             count,
@@ -93,7 +82,7 @@ pub fn create_factories(
             rounds,
             abort_probability,
             ..
-        } => Ok((0..*count)
+        } => (0..*count)
             .map(|_| {
                 FactoryKind::Distillation(DistillationFactory {
                     cycles_per_round: *cycles_per_round,
@@ -101,20 +90,30 @@ pub fn create_factories(
                     abort_probability: *abort_probability,
                 })
             })
-            .collect()),
+            .collect(),
 
         FactoryConfig::Cultivation {
             count, lambda_raw, ..
-        } => Ok((0..*count)
+        } => (0..*count)
             .map(|_| {
                 FactoryKind::Cultivation(CultivationFactory {
                     lambda_raw: *lambda_raw,
                     code_distance: qec.code_distance,
                 })
             })
-            .collect()),
+            .collect(),
 
-        FactoryConfig::RzSynthesis { .. } => Err(FactoryError::RzSynthesisNotImplemented),
+        FactoryConfig::RzSynthesis {
+            count,
+            mean_cycles_per_state,
+            ..
+        } => (0..*count)
+            .map(|_| {
+                FactoryKind::RzSynthesis(RzSynthesisFactory {
+                    mean_cycles: *mean_cycles_per_state,
+                })
+            })
+            .collect(),
     }
 }
 
@@ -143,41 +142,51 @@ mod tests {
         }
     }
 
+    fn rz_synthesis_config(count: u32) -> FactoryConfig {
+        FactoryConfig::RzSynthesis {
+            count,
+            distinct_angles: 1,
+            mean_cycles_per_state: 30.0,
+        }
+    }
+
     fn qec() -> pirx_hw::model::QecConfig {
         pirx_testkit::surface_code_qec(17)
     }
 
     #[test]
     fn create_factories_count() {
-        let distillation = create_factories(&distillation_config(3), &qec()).unwrap();
+        let distillation = create_factories(&distillation_config(3), &qec());
         assert_eq!(distillation.len(), 3);
 
-        let cultivation = create_factories(&cultivation_config(5), &qec()).unwrap();
+        let cultivation = create_factories(&cultivation_config(5), &qec());
         assert_eq!(cultivation.len(), 5);
     }
 
     #[test]
     fn create_factories_zero_count() {
-        let factories = create_factories(&cultivation_config(0), &qec()).unwrap();
+        let factories = create_factories(&cultivation_config(0), &qec());
         assert!(factories.is_empty());
     }
 
     #[test]
     fn create_factories_names() {
-        let factories = create_factories(&distillation_config(2), &qec()).unwrap();
+        let factories = create_factories(&distillation_config(2), &qec());
         assert!(factories.iter().all(|f| f.name() == "distillation"));
 
-        let factories = create_factories(&cultivation_config(2), &qec()).unwrap();
+        let factories = create_factories(&cultivation_config(2), &qec());
         assert!(factories.iter().all(|f| f.name() == "cultivation"));
     }
 
     #[test]
-    fn rz_synthesis_rejected() {
-        let config = FactoryConfig::RzSynthesis {
-            count: 4,
-            distinct_angles: 6,
-            mean_cycles_per_state: 30.0,
-        };
-        assert!(create_factories(&config, &qec()).is_err());
+    fn create_rz_synthesis_factories() {
+        let factories = create_factories(&rz_synthesis_config(8), &qec());
+        assert_eq!(factories.len(), 8);
+    }
+
+    #[test]
+    fn create_rz_synthesis_names() {
+        let factories = create_factories(&rz_synthesis_config(3), &qec());
+        assert!(factories.iter().all(|f| f.name() == "rz_synthesis"));
     }
 }

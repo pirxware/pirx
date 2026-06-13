@@ -21,7 +21,7 @@ use pirx_ir::circuit::{
 };
 use pirx_testkit::{
     blank_meta, clifford_t_measurement_chain, cultivation_hw, deterministic_distillation_hw,
-    single_t_gate, two_parallel_t_gates, validated,
+    rz_synthesis_hw, single_rotation, single_t_gate, two_parallel_t_gates, validated,
 };
 use smallvec::smallvec;
 
@@ -29,6 +29,7 @@ use smallvec::smallvec;
 
 const CULTIVATION_TOML: &str = include_str!("../../../models/surface_code_d17_cultivation.toml");
 const DISTILLATION_TOML: &str = include_str!("../../../models/surface_code_d17_distillation.toml");
+const RZ_SYNTHESIS_TOML: &str = include_str!("../../../models/surface_code_d17_rz_synthesis.toml");
 
 fn cultivation_hw_toml() -> HardwareModel {
     load(CULTIVATION_TOML).unwrap()
@@ -36,6 +37,10 @@ fn cultivation_hw_toml() -> HardwareModel {
 
 fn distillation_hw_toml() -> HardwareModel {
     load(DISTILLATION_TOML).unwrap()
+}
+
+fn rz_synthesis_hw_toml() -> HardwareModel {
+    load(RZ_SYNTHESIS_TOML).unwrap()
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -1005,4 +1010,100 @@ fn default_timing_measurement_one_cycle() {
         1,
         "default timing: measurement must take 1 cycle (ceil(0.5/1.0) = 1)"
     );
+}
+
+// ── Rz synthesis tests ──────────────────────────────────────────────────────
+
+/// 20. Rz synthesis factory produces rotation states; circuit runs to completion.
+#[test]
+fn rz_synthesis_runs_to_completion() {
+    let circuit = validated(single_rotation());
+    let hw = rz_synthesis_hw();
+
+    let trace = Engine::new(
+        &circuit,
+        &hw,
+        EngineConfig {
+            seed: 42,
+            max_cycles: None,
+        },
+    )
+    .unwrap()
+    .run();
+
+    assert!(
+        trace.total_cycles > 0,
+        "Rz synthesis circuit must run to completion"
+    );
+    assert!(
+        trace
+            .events
+            .iter()
+            .any(|e| matches!(e.kind, TraceEventKind::GateCompleted { .. })),
+        "rotation gate must complete"
+    );
+}
+
+/// 21. Rz synthesis is deterministic: same seed → same trace.
+#[test]
+fn rz_synthesis_deterministic() {
+    let circuit = validated(single_rotation());
+    let config = EngineConfig {
+        seed: 99,
+        max_cycles: None,
+    };
+
+    let t1 = Engine::new(&circuit, &rz_synthesis_hw(), config)
+        .unwrap()
+        .run();
+    let t2 = Engine::new(&circuit, &rz_synthesis_hw(), config)
+        .unwrap()
+        .run();
+    assert_eq!(
+        t1, t2,
+        "rz_synthesis: same seed must produce an identical trace"
+    );
+}
+
+/// 22. Rotation gate consumes a magic state from the buffer.
+#[test]
+fn rotation_consumes_magic_state() {
+    let mut hw = rz_synthesis_hw();
+    hw.buffer.preload = 1;
+    hw.injection.error_probability = 0.0;
+
+    let circuit = validated(single_rotation());
+
+    let trace = Engine::new(
+        &circuit,
+        &hw,
+        EngineConfig {
+            seed: 0,
+            max_cycles: None,
+        },
+    )
+    .unwrap()
+    .run();
+
+    assert!(
+        trace
+            .events
+            .iter()
+            .any(|e| matches!(e.kind, TraceEventKind::BufferDequeue { .. })),
+        "rotation gate must trigger a BufferDequeue event"
+    );
+    assert!(
+        trace
+            .events
+            .iter()
+            .any(|e| matches!(e.kind, TraceEventKind::GateServed { .. })),
+        "rotation gate must appear as GateServed (magic state consumed)"
+    );
+}
+
+/// 23. Rz synthesis TOML model file loads and validates successfully.
+#[test]
+fn rz_synthesis_toml_loads() {
+    let hw = rz_synthesis_hw_toml();
+    assert_eq!(hw.meta.name, "surface_code_d17_rz_synthesis_8fac");
 }

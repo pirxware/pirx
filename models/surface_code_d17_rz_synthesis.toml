@@ -1,0 +1,30 @@
+[meta]
+name = "surface_code_d17_rz_synthesis_8fac"
+description = "Surface code at distance 17 with 8 Rz synthesis factories"
+
+[qec]
+code_type = "surface_code"
+code_distance = 17
+physical_error_rate = 1e-3
+
+[timing]
+cycle_time_us = 1.0
+classical_feedback_latency_us = 1.0
+
+[factory]
+type = "rz_synthesis"
+count = 8
+distinct_angles = 1
+mean_cycles_per_state = 30.0
+
+[injection]
+error_probability = 0.5
+fixup_cost_cycles = 1
+
+[routing]
+model = "scalar"
+overhead_fraction = 0.5
+
+[buffer]
+capacity = 8
+preload = 0

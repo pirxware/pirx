@@ -125,7 +125,7 @@ impl Engine {
         );
 
         // Create factory instances from hardware config.
-        let factories = create_factories(&hw.factory, &hw.qec)?;
+        let factories = create_factories(&hw.factory, &hw.qec);
         let factory_count = factories.len();
 
         // Initialize buffer.

@@ -318,6 +318,32 @@ pub fn hook_activates_t_gate() -> ProfilerCircuit {
     }
 }
 
+/// Single Rotation gate on qubit 0. Requires one magic state (rotation state).
+pub fn single_rotation() -> ProfilerCircuit {
+    ProfilerCircuit {
+        ops: vec![Operation {
+            id: 0,
+            kind: OpKind::Rotation {
+                angle: 0.123_456_789,
+            },
+            qubits: smallvec![0],
+            initially_active: true,
+        }],
+        deps: vec![],
+        qubit_count: 1,
+        qubit_positions: None,
+        hooks: vec![],
+        metadata: CircuitMetadata {
+            name: "single-rotation".into(),
+            source_framework: "test".into(),
+            t_count: 0,
+            clifford_count: 0,
+            rotation_count: 1,
+            depth: 1,
+        },
+    }
+}
+
 /// `n` independent Clifford gates, each on a separate qubit. All enter the
 /// ready set at once — tests parallel scheduling.
 pub fn parallel_cliffords(n: u32) -> ProfilerCircuit {

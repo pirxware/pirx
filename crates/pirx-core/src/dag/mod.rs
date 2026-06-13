@@ -25,7 +25,7 @@ use slotmap::SlotMap;
 ///
 /// Callers should prefer [`Dag::release_successors`] and [`Dag::inject_fixup`]
 /// over direct mutation of `adjacency`.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug)]
 pub struct Dag {
     pub(crate) ops: SlotMap<OpKey, OpData>,
     /// Adjacency maps — `pub` so the Engine can read them directly for

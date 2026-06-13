@@ -1,7 +1,6 @@
 //! Operation types and node data for the circuit DAG.
 
 use pirx_ir::circuit::{MeasurementHookId, QubitId};
-use serde::{Deserialize, Serialize};
 use slotmap::new_key_type;
 use smallvec::SmallVec;
 
@@ -17,7 +16,7 @@ new_key_type! {
 ///
 /// Separate from [`pirx_ir::circuit::OpKind`]: uses `angle_index: u16` instead
 /// of `f64` for rotations, and adds [`OpKind::Fixup`] for injection-error nodes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpKind {
     /// Clifford gate — no magic state consumed, no injection error possible.
     Clifford,
@@ -35,7 +34,7 @@ pub enum OpKind {
 }
 
 /// Core node data — hot during gate scheduling.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct OpData {
     pub kind: OpKind,
     /// Logical qubits this operation acts on (1-2 in the common case).

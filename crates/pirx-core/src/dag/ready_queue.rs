@@ -2,8 +2,6 @@
 
 use std::collections::VecDeque;
 
-use serde::{Deserialize, Serialize};
-
 use super::kind::OpKey;
 
 /// Interface for the ready-gate queue.
@@ -23,7 +21,7 @@ pub trait ReadyQueue {
 /// Gates that become ready in the same cycle are served in insertion order,
 /// matching the priority-list scheduling model and ensuring determinism under
 /// a fixed seed.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug)]
 pub struct FifoReadyQueue {
     inner: VecDeque<OpKey>,
 }

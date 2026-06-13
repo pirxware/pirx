@@ -6,7 +6,6 @@
 
 use rand_chacha::ChaCha12Rng;
 use rand_distr::{Distribution, Exp};
-use serde::{Deserialize, Serialize};
 
 use super::{FactoryModel, FactoryOutcome};
 
@@ -15,7 +14,7 @@ use super::{FactoryModel, FactoryOutcome};
 /// `lambda_raw` must be strictly positive. A non-positive `lambda_raw` (invalid
 /// hardware config) results in a 1-cycle fallback so the engine keeps running;
 /// the anomalous speed is visible in the trace.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct CultivationFactory {
     /// Exponential rate parameter (1 / mean raw service time). Must be > 0.
     pub lambda_raw: f64,
@@ -38,7 +37,7 @@ impl FactoryModel for CultivationFactory {
         #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
         let scheduling_cycles = (raw_time / f64::from(self.code_distance)).ceil() as u64;
         FactoryOutcome::Produced {
-            completion_cycle: current_cycle + scheduling_cycles.max(1),
+            completion_cycle: current_cycle.saturating_add(scheduling_cycles.max(1)),
         }
     }
 

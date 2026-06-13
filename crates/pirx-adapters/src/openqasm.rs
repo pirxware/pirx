@@ -308,7 +308,10 @@ impl<'a> CircuitBuilder<'a> {
             .collect()
     }
 
-    fn resolve_gate_qubits(&self, gc: &asg::GateCall) -> Result<SmallVec<[QubitId; 2]>, OpenQasmError> {
+    fn resolve_gate_qubits(
+        &self,
+        gc: &asg::GateCall,
+    ) -> Result<SmallVec<[QubitId; 2]>, OpenQasmError> {
         let mut qubits = SmallVec::new();
         for texpr in gc.qubits() {
             match texpr.expression() {

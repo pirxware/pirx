@@ -52,48 +52,48 @@ ci: check test audit
 
 # ── Sync (install/update venv + build extension) ─────────────────────────────
 
-sync-python:
+sync-py:
 	cd $(PYTHON_DIR) && uv sync --all-extras
 	cd $(PYTHON_DIR) && uv run maturin develop --release
 
 # ── Build (extension only, no dependency sync) ───────────────────────────────
 
-build-python:
+build-py:
 	cd $(PYTHON_DIR) && uv run maturin develop --release
 
 # ── Format & Lint ─────────────────────────────────────────────────────────────
 
-fmt-python:
+fmt-py:
 	cd $(PYTHON_DIR) && uv run ruff format pirx/ tests/
 	cd $(PYTHON_DIR) && uv run ruff check --fix pirx/ tests/
 
-check-python:
+check-py:
 	cd $(PYTHON_DIR) && uv run ruff format --check pirx/ tests/
 	cd $(PYTHON_DIR) && uv run ruff check pirx/ tests/
 	cd $(PYTHON_DIR) && uv run mypy pirx/ --ignore-missing-imports
 
 # ── Test ──────────────────────────────────────────────────────────────────────
 
-test-python:
+test-py:
 	cd $(PYTHON_DIR) && uv run pytest tests/ -v
 
-test-python-tket:
+test-py-tket:
 	cd $(PYTHON_DIR) && uv run pytest tests/test_tket_adapter.py -v
 
-test-python-qiskit:
+test-py-qiskit:
 	cd $(PYTHON_DIR) && uv run pytest tests/test_qiskit_adapter.py -v
 
-test-python-qualtran:
+test-py-qualtran:
 	cd $(PYTHON_DIR) && uv run pytest tests/test_qualtran_adapter.py -v
 
 # ── Audit ─────────────────────────────────────────────────────────────────────
 
-audit-python:
+audit-py:
 	cd $(PYTHON_DIR) && uv run pip-audit
 
 # ── CI gate (Python only — run before pushing Python changes) ─────────────────
 
-ci-python: check-python test-python audit-python
+ci-py: check-python test-python audit-python
 	@echo "  ✓ Python checks passed"
 
 # ══════════════════════════════════════════════════════════════════════════════

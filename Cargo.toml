@@ -7,6 +7,7 @@ members = [
     "crates/pirx-adapters",
     "crates/pirx-cli",
     "crates/pirx-testkit",
+    "python",
 ]
 
 [workspace.package]

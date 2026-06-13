@@ -1,5 +1,10 @@
-# Build
+# Build artifacts
 /target/
+.venv
+__pycache__
+*.so
+*.pyd
+*.dylib
 
 # IDE
 .idea/

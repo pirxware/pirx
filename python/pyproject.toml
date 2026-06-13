@@ -1,0 +1,70 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "pirx"
+requires-python = ">=3.10"
+description = "Execution profiler for fault-tolerant quantum computing"
+license = { text = "Apache-2.0" }
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "License :: OSI Approved :: Apache Software License",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+dynamic = ["version"]
+
+[project.optional-dependencies]
+tket = ["pytket>=1.0"]
+qiskit = ["qiskit>=1.0"]
+qualtran = ["qualtran>=0.4"]
+dev = ["pytest>=8", "pytest-xdist"]
+
+[dependency-groups]
+dev = [
+    "maturin>=1.7,<2",
+    "pytest>=8",
+    "pytest-xdist>=3",
+    "ruff>=0.11",
+    "mypy>=1.15",
+    "pip-audit>=2",
+]
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+module-name = "pirx._pirx"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "F",     # pyflakes
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "I",     # isort
+    "UP",    # pyupgrade
+    "B",     # bugbear
+    "SIM",   # simplify
+    "RUF",   # ruff-specific
+    "PT",    # pytest style
+    "TCH",   # type-checking imports
+    "PIE",   # misc lints
+    "C4",    # comprehensions
+    "T20",   # print statements
+]
+ignore = [
+    "E501",  # line length — handled by formatter
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["pirx"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = false
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false

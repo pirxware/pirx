@@ -1,0 +1,41 @@
+[package]
+name = "pirx-python"
+version = "0.1.0"
+publish = false
+description = "Python bindings for the pirx execution profiler"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+name = "_pirx"
+crate-type = ["cdylib"]
+
+[dependencies]
+pirx-ir = { workspace = true }
+pirx-hw = { workspace = true }
+pirx-core = { workspace = true }
+pyo3 = { version = "0.29", features = ["extension-module"] }
+serde_json = { workspace = true }
+
+# Cannot inherit workspace lints: workspace forbids unsafe_code, but
+# PyO3 proc macros generate FFI boundary code that requires it.
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "warn"
+cast_possible_truncation = "warn"
+cast_sign_loss = "warn"
+cast_lossless = "warn"
+large_enum_variant = "warn"
+needless_pass_by_value = "warn"
+cloned_instead_of_copied = "warn"
+redundant_closure_for_method_calls = "warn"
+manual_let_else = "warn"
+implicit_clone = "warn"
+trivially_copy_pass_by_ref = "warn"
+unnecessary_wraps = "warn"
+used_underscore_binding = "warn"

@@ -1,7 +1,14 @@
 """Pirx framework adapters."""
 
+from __future__ import annotations
 
-def from_tket(circuit, *, name=None):
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import pirx
+
+
+def from_tket(circuit: Any, *, name: str | None = None) -> pirx.ProfilerCircuit:
     """Convert a pytket Circuit to a Pirx ProfilerCircuit.
 
     Requires: pip install pirx[tket]
@@ -11,7 +18,7 @@ def from_tket(circuit, *, name=None):
     return _impl(circuit, name=name)
 
 
-def from_qiskit(circuit, *, name=None):
+def from_qiskit(circuit: Any, *, name: str | None = None) -> pirx.ProfilerCircuit:
     """Convert a Qiskit QuantumCircuit to a Pirx ProfilerCircuit.
 
     Requires: pip install pirx[qiskit]
@@ -21,7 +28,7 @@ def from_qiskit(circuit, *, name=None):
     return _impl(circuit, name=name)
 
 
-def from_qiskit_dag(dag, *, name=None):
+def from_qiskit_dag(dag: Any, *, name: str | None = None) -> pirx.ProfilerCircuit:
     """Convert a Qiskit DAGCircuit to a Pirx ProfilerCircuit.
 
     Requires: pip install pirx[qiskit]
@@ -31,7 +38,9 @@ def from_qiskit_dag(dag, *, name=None):
     return _impl(dag, name=name)
 
 
-def from_qualtran(bloq, *, name=None, max_depth=None):
+def from_qualtran(
+    bloq: Any, *, name: str | None = None, max_depth: int | None = None
+) -> pirx.ProfilerCircuit:
     """Convert a Qualtran Bloq to a Pirx ProfilerCircuit.
 
     Requires: pip install pirx[qualtran]

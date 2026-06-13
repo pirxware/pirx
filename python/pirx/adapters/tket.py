@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-import warnings
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -81,13 +80,10 @@ def _classify_op(cmd: Command) -> dict[str, Any] | str:
         angle_half_turns = params[0]
         if isinstance(angle_half_turns, float | int):
             return _classify_rz_angle(float(angle_half_turns))
-        warnings.warn(
-            f"Symbolic parameter in {op_type.name}({angle_half_turns}) — "
-            f"classifying as Rotation with angle 0.0. "
-            f"Resolve symbolic parameters before calling from_tket().",
-            stacklevel=3,
+        raise ValueError(
+            f"circuit contains symbolic parameter in {op_type.name}({angle_half_turns}) "
+            f"— resolve symbolic parameters before calling from_tket()"
         )
-        return {"Rotation": {"angle": 0.0}}
 
     if op_type in _MEASURE_OPS:
         return {"Measurement": {"hook": None}}

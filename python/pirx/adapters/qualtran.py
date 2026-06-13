@@ -156,85 +156,6 @@ def _is_skip(bloq: Bloq) -> bool:
     return type(bloq).__name__ in _SKIP_BLOQ_NAMES
 
 
-def _decompose_recursive(
-    bloq: Bloq,
-    max_depth: int,
-    current_depth: int,
-) -> _CompositeBloq | None:
-    """Recursively decompose a Bloq until all children are leaves.
-
-    Returns a CompositeBloq with only leaf-level children, or None if
-    the bloq is a skip type that should produce no operations.
-    """
-    from qualtran import DecomposeNotImplementedError
-
-    if _is_skip(bloq):
-        return None
-
-    if current_depth >= max_depth or _is_leaf(bloq):
-        try:
-            return bloq.as_composite_bloq()
-        except (AttributeError, TypeError):
-            bb = bloq.decompose_bloq()
-            return bb if isinstance(bb, _CompositeBloq) else None
-
-    try:
-        cbloq = bloq.decompose_bloq()
-    except (DecomposeNotImplementedError, NotImplementedError):
-        try:
-            return bloq.as_composite_bloq()
-        except (AttributeError, TypeError):
-            return None
-
-    all_leaves = all(_is_leaf(binst.bloq) or _is_skip(binst.bloq) for binst in cbloq.bloq_instances)
-    if all_leaves:
-        return cbloq
-
-    try:
-        from qualtran._infra.composite_bloq import _flatten_once_func
-
-        flat = _flatten_once_func(cbloq)
-        remaining = [
-            binst
-            for binst in flat.bloq_instances
-            if not _is_leaf(binst.bloq) and not _is_skip(binst.bloq)
-        ]
-        if not remaining:
-            return flat
-    except (ImportError, AttributeError, Exception):
-        pass
-
-    return _decompose_iterative(cbloq, max_depth, current_depth + 1)
-
-
-def _decompose_iterative(
-    cbloq: CompositeBloq,
-    max_depth: int,
-    current_depth: int,
-) -> _CompositeBloq:
-    """Iteratively flatten a CompositeBloq by decomposing non-leaf children."""
-    result = cbloq
-    for _ in range(max_depth - current_depth):
-        non_leaves = [
-            binst
-            for binst in result.bloq_instances
-            if not _is_leaf(binst.bloq) and not _is_skip(binst.bloq)
-        ]
-        if not non_leaves:
-            break
-
-        try:
-            from qualtran._infra.composite_bloq import _flatten_once_func
-
-            result = _flatten_once_func(result)
-        except (ImportError, AttributeError):
-            break
-        except Exception:
-            break
-
-    return result
-
-
 def _handle_opaque_bloq(
     bloq: Bloq,
     op_id_start: int,
@@ -272,66 +193,110 @@ def _handle_opaque_bloq(
     return ops, deps, op_id_start + t_count
 
 
-def _extract_from_composite(
-    cbloq: CompositeBloq,
+def _extract_ops(
+    bloq: Bloq,
     flattener: _RegisterFlattener,
-) -> tuple[list[dict[str, Any]], list[tuple[int, int]]]:
-    """Extract operations and dependencies from a fully-decomposed CompositeBloq."""
+    max_depth: int,
+    current_depth: int,
+    next_id: int,
+) -> tuple[list[dict[str, Any]], list[tuple[int, int]], int]:
+    """Recursively decompose a Bloq and extract leaf operations and dependencies.
+
+    Replaces the previous decompose/flatten/extract pipeline with a single
+    recursive walk that uses only public Qualtran APIs (decompose_bloq,
+    as_composite_bloq, connections, bloq_instances).
+    """
+    from qualtran import DecomposeNotImplementedError
     from qualtran._infra.composite_bloq import BloqInstance
+
+    if _is_skip(bloq):
+        return [], [], next_id
+
+    if current_depth >= max_depth:
+        if _is_leaf(bloq):
+            kind = _classify_bloq(bloq)
+            if kind is None:
+                return [], [], next_id
+            return [{"id": next_id, "kind": kind, "qubits": [0]}], [], next_id + 1
+        return _handle_opaque_bloq(bloq, next_id)
+
+    cbloq: CompositeBloq | None = None
+
+    if _is_leaf(bloq):
+        try:
+            cbloq = bloq.as_composite_bloq()
+        except (AttributeError, TypeError):
+            kind = _classify_bloq(bloq)
+            if kind is None:
+                return [], [], next_id
+            return [{"id": next_id, "kind": kind, "qubits": [0]}], [], next_id + 1
+    else:
+        try:
+            cbloq = bloq.decompose_bloq()
+        except (DecomposeNotImplementedError, NotImplementedError):
+            try:
+                cbloq = bloq.as_composite_bloq()
+            except (AttributeError, TypeError):
+                return _handle_opaque_bloq(bloq, next_id)
+
+    if cbloq is None or not isinstance(cbloq, _CompositeBloq):
+        return _handle_opaque_bloq(bloq, next_id)
 
     ops: list[dict[str, Any]] = []
     deps: list[tuple[int, int]] = []
     binst_to_id: dict[int, int] = {}
-    next_id = 0
-    opaque_ops: list[dict[str, Any]] = []
-    opaque_deps: list[tuple[int, int]] = []
 
     for binst in cbloq.bloq_instances:
         if _is_skip(binst.bloq):
             continue
 
-        if not _is_leaf(binst.bloq):
-            synth_ops, synth_deps, new_next = _handle_opaque_bloq(binst.bloq, next_id)
-            binst_to_id[id(binst)] = next_id
-            opaque_ops.extend(synth_ops)
-            opaque_deps.extend(synth_deps)
-            next_id = new_next
-            continue
+        if _is_leaf(binst.bloq):
+            kind = _classify_bloq(binst.bloq)
+            if kind is None:
+                continue
 
-        kind = _classify_bloq(binst.bloq)
-        if kind is None:
-            continue
+            qubits: list[int] = []
+            for reg in binst.bloq.signature:
+                for idx in range(reg.total_bits()):
+                    qid = flattener.get_qubit_id(binst, reg.name, idx)
+                    qubits.append(qid)
 
-        qubits: list[int] = []
-        for reg in binst.bloq.signature:
-            for idx in range(reg.total_bits()):
-                qid = flattener.get_qubit_id(binst, reg.name, idx)
-                qubits.append(qid)
+            seen: set[int] = set()
+            unique_qubits: list[int] = []
+            for q in qubits:
+                if q not in seen:
+                    seen.add(q)
+                    unique_qubits.append(q)
 
-        seen: set[int] = set()
-        unique_qubits: list[int] = []
-        for q in qubits:
-            if q not in seen:
-                seen.add(q)
-                unique_qubits.append(q)
+            if not unique_qubits:
+                warnings.warn(
+                    f"Bloq '{type(binst.bloq).__name__}' produced no qubit mappings "
+                    f"— assigning placeholder qubit 0.",
+                    stacklevel=3,
+                )
+                unique_qubits = [0]
 
-        if not unique_qubits:
-            unique_qubits = [0]
+            op_id = next_id
+            next_id += 1
+            binst_to_id[id(binst)] = op_id
 
-        op_id = next_id
-        next_id += 1
-        binst_to_id[id(binst)] = op_id
+            ops.append(
+                {
+                    "id": op_id,
+                    "kind": kind,
+                    "qubits": unique_qubits,
+                }
+            )
 
-        ops.append(
-            {
-                "id": op_id,
-                "kind": kind,
-                "qubits": unique_qubits,
-            }
-        )
-
-    ops.extend(opaque_ops)
-    deps.extend(opaque_deps)
+        else:
+            first_id = next_id
+            sub_ops, sub_deps, next_id = _extract_ops(
+                binst.bloq, flattener, max_depth, current_depth + 1, next_id
+            )
+            if sub_ops:
+                binst_to_id[id(binst)] = first_id
+                ops.extend(sub_ops)
+                deps.extend(sub_deps)
 
     for conn in cbloq.connections:
         left_binst = conn.left.binst
@@ -345,7 +310,7 @@ def _extract_from_composite(
         if left_id is not None and right_id is not None and left_id != right_id:
             deps.append((left_id, right_id))
 
-    return ops, deps
+    return ops, deps, next_id
 
 
 def from_qualtran(
@@ -393,16 +358,8 @@ def from_qualtran(
 
     effective_max_depth = max_depth if max_depth is not None else _MAX_DEFAULT_DEPTH
 
-    cbloq = _decompose_recursive(bloq, max_depth=effective_max_depth, current_depth=0)
-    if cbloq is None:
-        raise ValueError(
-            f"decomposition of {type(bloq).__name__} produced no operations — "
-            f"the Bloq may be an infrastructure type (Split, Join, etc.) "
-            f"with no physical gate content"
-        )
-
     flattener = _RegisterFlattener()
-    ops, deps = _extract_from_composite(cbloq, flattener)
+    ops, deps, _ = _extract_ops(bloq, flattener, effective_max_depth, 0, 0)
 
     if not ops:
         raise ValueError(

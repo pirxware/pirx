@@ -103,7 +103,7 @@ def _extract_from_dag(dag, qubit_map: dict) -> tuple[list[dict[str, Any]], list[
 
         op_id = next_id
         next_id += 1
-        node_to_id[node._node_id] = op_id
+        node_to_id[id(node)] = op_id
 
         qubit_indices = [qubit_map[q] for q in node.qargs]
         ops.append(
@@ -116,8 +116,8 @@ def _extract_from_dag(dag, qubit_map: dict) -> tuple[list[dict[str, Any]], list[
 
     deps: list[tuple[int, int]] = []
     for src, dst, _ in dag.edges():
-        src_id = node_to_id.get(getattr(src, "_node_id", None))
-        dst_id = node_to_id.get(getattr(dst, "_node_id", None))
+        src_id = node_to_id.get(id(src))
+        dst_id = node_to_id.get(id(dst))
         if src_id is not None and dst_id is not None:
             deps.append((src_id, dst_id))
 

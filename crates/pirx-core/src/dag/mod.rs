@@ -14,7 +14,7 @@ mod ready_queue;
 pub use adjacency::DagAdjacency;
 pub use build::{DagBuild, DagError};
 pub use kind::{OpData, OpKey, OpKind};
-pub use ready_queue::{FifoReadyQueue, ReadyQueue};
+pub use ready_queue::FifoReadyQueue;
 use slotmap::SlotMap;
 
 /// Circuit dependency graph — the engine's structural view of the circuit.

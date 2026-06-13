@@ -5,7 +5,7 @@ use smallvec::SmallVec;
 use super::{
     Dag,
     kind::{OpData, OpKey, OpKind},
-    ready_queue::{FifoReadyQueue, ReadyQueue},
+    ready_queue::FifoReadyQueue,
 };
 
 impl Dag {
@@ -130,7 +130,7 @@ mod tests {
     use smallvec::smallvec;
 
     use super::super::fixtures::{chain_circuit, minimal_hw, validated};
-    use crate::dag::{Dag, FifoReadyQueue, OpKind, ready_queue::ReadyQueue};
+    use crate::dag::{Dag, FifoReadyQueue, OpKind};
 
     // ── release_successors ──────────────────────────────────────────────────
 

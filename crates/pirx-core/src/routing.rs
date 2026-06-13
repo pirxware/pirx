@@ -8,7 +8,7 @@ use pirx_ir::circuit::{GridPosition, QubitId};
 pub type PositionIndex = [(u32, u32)];
 
 /// Routing cost model. Returns latency in QEC cycles.
-pub trait RoutingModel: Send {
+pub(crate) trait RoutingModel: Send {
     fn latency(&self, qubits: &[QubitId], positions: &PositionIndex) -> u32;
 }
 

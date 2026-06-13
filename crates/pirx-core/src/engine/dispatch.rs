@@ -5,7 +5,7 @@ use rand::Rng as _;
 
 use super::Engine;
 use crate::{
-    dag::{OpKey, OpKind, ReadyQueue},
+    dag::{OpKey, OpKind},
     events::{EngineEvent, TimedEvent},
     factory::{FactoryModel, FactoryOutcome},
     routing::RoutingModel,

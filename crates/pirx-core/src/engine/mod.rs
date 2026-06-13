@@ -21,7 +21,7 @@ use smallvec::SmallVec;
 
 use crate::{
     buffer::MagicStateBuffer,
-    dag::{Dag, DagBuild, FifoReadyQueue, OpKey, ReadyQueue},
+    dag::{Dag, DagBuild, FifoReadyQueue, OpKey},
     events::{EngineEvent, EventQueue},
     factory::{FactoryKind, FactoryModel, FactoryOutcome, create_factories},
     routing,

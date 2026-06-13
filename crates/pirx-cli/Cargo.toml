@@ -17,7 +17,6 @@ path = "src/main.rs"
 pirx-ir = { workspace = true }
 pirx-hw = { workspace = true }
 pirx-core = { workspace = true }
-pirx-adapters = { workspace = true }
 clap = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

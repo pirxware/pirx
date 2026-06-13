@@ -103,7 +103,7 @@ impl Dag {
                 preds.push(from_key);
             }
             if let Some(count) = predecessor_count.get_mut(to_key) {
-                *count += 1;
+                *count = count.saturating_add(1);
             }
         }
 

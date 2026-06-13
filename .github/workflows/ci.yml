@@ -45,6 +45,26 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - run: cargo test --workspace --locked
 
+  python-bindings:
+    name: Python bindings
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "${{ matrix.python }}"
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
+        with:
+          toolchain: "1.88"
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - run: pip install maturin pytest
+      - run: maturin build --manifest-path python/Cargo.toml --out dist
+      - run: pip install dist/*.whl
+      - run: cd python && pytest tests/ -v
+
   audit:
     name: Audit
     runs-on: ubuntu-latest
@@ -63,6 +83,7 @@ jobs:
       - name: Cargo dependency freshness check
         run: |
           set -euo pipefail
+          ALLOW_FILE=".github/freshness-allow.toml"
           MIN_AGE_DAYS=7
           NOW=$(date +%s)
           FAIL_FILE=$(mktemp)
@@ -79,6 +100,12 @@ jobs:
                 /^version = "'"$version"'"/{v_ok=1}
                 /^source = /{if(n_ok&&v_ok) print; n_ok=0; v_ok=0}
               ' Cargo.lock 2>/dev/null)" 2>/dev/null && continue || true
+
+            # Skip packages explicitly allowed (security-motivated upgrades)
+            if [ -f "$ALLOW_FILE" ] && grep -qP "^\s*${name}\s*=\s*\"${version}\"" "$ALLOW_FILE" 2>/dev/null; then
+              echo "::notice::${name}@${version} exempt via ${ALLOW_FILE}"
+              continue
+            fi
 
             # Query crates.io for publish date of this exact version.
             # Download to file first — piping curl to python3 triggers the
@@ -105,6 +132,88 @@ jobs:
           [ "$FAIL" -eq 0 ] || {
             echo ""
             echo "Crate(s) above were published less than ${MIN_AGE_DAYS} days ago."
+            echo "Verify the release is legitimate before merging."
+            exit 1
+          }
+
+      # Same freshness gate for direct Python dependencies.
+      # Only checks packages listed in pyproject.toml (not transitive
+      # deps — those are managed by their own maintainers, and the
+      # Python ecosystem churns too fast to gate on 215+ transitives).
+      - name: Python dependency freshness check
+        run: |
+          set -euo pipefail
+          ALLOW_FILE=".github/freshness-allow.toml"
+          LOCK="python/uv.lock"
+          PYPROJECT="python/pyproject.toml"
+          [ -f "$LOCK" ] || { echo "No python/uv.lock — skipping"; exit 0; }
+
+          MIN_AGE_DAYS=7
+          NOW=$(date +%s)
+          FAIL_FILE=$(mktemp)
+          echo 0 > "$FAIL_FILE"
+
+          # Extract direct dependency names from pyproject.toml
+          # (build-system requires, optional-dependencies, dependency-groups).
+          # Then look up their pinned versions from uv.lock.
+          while read -r name version; do
+            # Skip packages explicitly allowed (security-motivated upgrades)
+            if [ -f "$ALLOW_FILE" ] && grep -qP "^\s*${name}\s*=\s*\"${version}\"" "$ALLOW_FILE" 2>/dev/null; then
+              echo "::notice::${name}@${version} exempt via ${ALLOW_FILE}"
+              continue
+            fi
+
+            # Normalize name for PyPI API (PEP 503)
+            pypi_name=$(echo "$name" | tr '[:upper:]_' '[:lower:]-')
+
+            _tmp=$(mktemp)
+            curl -sf "https://pypi.org/pypi/${pypi_name}/${version}/json" \
+              -H "User-Agent: pirx-ci (supply-chain-check)" \
+              -o "$_tmp" || { rm -f "$_tmp"; continue; }
+            PUBLISHED=$(python3 -c "
+          import json
+          data = json.load(open('$_tmp'))
+          urls = data.get('urls', [])
+          if urls:
+              print(urls[0]['upload_time_iso_8601'])
+          " 2>/dev/null) || { rm -f "$_tmp"; continue; }
+            rm -f "$_tmp"
+
+            [ -n "$PUBLISHED" ] || continue
+            PUB_EPOCH=$(date -d "$PUBLISHED" +%s 2>/dev/null) || continue
+            AGE_DAYS=$(( (NOW - PUB_EPOCH) / 86400 ))
+
+            if [ "$AGE_DAYS" -lt "$MIN_AGE_DAYS" ]; then
+              echo "::error::${name}@${version} published ${AGE_DAYS}d ago (minimum: ${MIN_AGE_DAYS}d)"
+              echo 1 > "$FAIL_FILE"
+            fi
+          done < <(python3 -c "
+          import re, sys
+
+          # Collect direct dep names from pyproject.toml
+          pyproject = open('$PYPROJECT').read()
+          direct = set()
+          for m in re.finditer(r'\"([a-zA-Z0-9_-]+)\s*[><=!]', pyproject):
+              direct.add(m.group(1).lower().replace('_', '-'))
+
+          # Look up pinned versions from uv.lock for direct deps only
+          lock = open('$LOCK').read()
+          for block in lock.split('[[package]]')[1:]:
+              if 'registry' not in block:
+                  continue
+              nm = re.search(r'name\s*=\s*\"([^\"]+)\"', block)
+              vr = re.search(r'version\s*=\s*\"([^\"]+)\"', block)
+              if nm and vr:
+                  pkg = nm.group(1).lower().replace('_', '-')
+                  if pkg in direct:
+                      print(nm.group(1), vr.group(1))
+          " | sort -u)
+
+          FAIL=$(cat "$FAIL_FILE")
+          rm -f "$FAIL_FILE"
+          [ "$FAIL" -eq 0 ] || {
+            echo ""
+            echo "Python package(s) above were published less than ${MIN_AGE_DAYS} days ago."
             echo "Verify the release is legitimate before merging."
             exit 1
           }

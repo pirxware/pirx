@@ -19,6 +19,7 @@ except ImportError as e:
     ) from e
 
 import pirx
+from pirx.adapters._classify import classify_rz_angle as _classify_rz_angle
 
 logger = logging.getLogger(__name__)
 
@@ -65,21 +66,6 @@ _SKIP_BLOQ_NAMES: frozenset[str] = frozenset(
 _T_GATE_NAMES: frozenset[str] = frozenset({"TGate"})
 
 _ROTATION_NAMES: frozenset[str] = frozenset({"Rz", "Rx", "Ry", "ZPowGate", "XPowGate", "YPowGate"})
-
-
-def _classify_rz_angle(angle_rad: float) -> dict[str, Any] | str:
-    """Classify an Rz rotation angle (in radians) into OpKind.
-
-    Odd multiples of pi/4 -> TGate, even multiples -> Clifford,
-    everything else -> Rotation.
-    """
-    k = angle_rad / (math.pi / 4)
-    k_rounded = round(k)
-    if abs(k - k_rounded) < 1e-10:
-        if int(k_rounded) % 2 != 0:
-            return "TGate"
-        return "Clifford"
-    return {"Rotation": {"angle": angle_rad}}
 
 
 def _get_bloq_angle(bloq: Bloq) -> float | None:
@@ -244,7 +230,8 @@ def _extract_ops(
 
     ops: list[dict[str, Any]] = []
     deps: list[tuple[int, int]] = []
-    binst_to_id: dict[int, int] = {}
+    binst_to_first: dict[int, int] = {}
+    binst_to_last: dict[int, int] = {}
 
     for binst in cbloq.bloq_instances:
         if _is_skip(binst.bloq):
@@ -278,7 +265,8 @@ def _extract_ops(
 
             op_id = next_id
             next_id += 1
-            binst_to_id[id(binst)] = op_id
+            binst_to_first[id(binst)] = op_id
+            binst_to_last[id(binst)] = op_id
 
             ops.append(
                 {
@@ -294,7 +282,8 @@ def _extract_ops(
                 binst.bloq, flattener, max_depth, current_depth + 1, next_id
             )
             if sub_ops:
-                binst_to_id[id(binst)] = first_id
+                binst_to_first[id(binst)] = first_id
+                binst_to_last[id(binst)] = next_id - 1
                 ops.extend(sub_ops)
                 deps.extend(sub_deps)
 
@@ -305,8 +294,8 @@ def _extract_ops(
         if not isinstance(left_binst, BloqInstance) or not isinstance(right_binst, BloqInstance):
             continue
 
-        left_id = binst_to_id.get(id(left_binst))
-        right_id = binst_to_id.get(id(right_binst))
+        left_id = binst_to_last.get(id(left_binst))
+        right_id = binst_to_first.get(id(right_binst))
         if left_id is not None and right_id is not None and left_id != right_id:
             deps.append((left_id, right_id))
 

@@ -17,6 +17,7 @@ except ImportError as e:
     ) from e
 
 import pirx
+from pirx.adapters._classify import classify_rz_angle as _classify_rz_angle
 
 _T_GATE_OPS: frozenset[OpType] = frozenset(
     {
@@ -49,21 +50,12 @@ _SKIP_OPS: frozenset[OpType] = frozenset(
 )
 
 
-def _classify_rz_angle(angle_half_turns: float) -> dict[str, Any] | str:
-    """Classify an Rz rotation angle (in half-turns, pytket convention) into OpKind.
+def _classify_half_turns(angle_half_turns: float) -> dict[str, Any] | str:
+    """Classify a rotation angle in half-turns (pytket convention) into OpKind.
 
-    Converts to radians (multiply by pi), then applies the same logic as
-    pirx_ir::classify_rz_angle: odd multiples of pi/4 -> TGate, even
-    multiples -> Clifford, everything else -> Rotation.
+    Converts to radians (multiply by pi), then delegates to _classify_rz_angle.
     """
-    angle_rad = angle_half_turns * math.pi
-    k = angle_rad / (math.pi / 4)
-    k_rounded = round(k)
-    if abs(k - k_rounded) < 1e-10:
-        if int(k_rounded) % 2 != 0:
-            return "TGate"
-        return "Clifford"
-    return {"Rotation": {"angle": angle_rad}}
+    return _classify_rz_angle(angle_half_turns * math.pi)
 
 
 def _classify_op(cmd: Command) -> dict[str, Any] | str:
@@ -79,7 +71,7 @@ def _classify_op(cmd: Command) -> dict[str, Any] | str:
             return "Clifford"
         angle_half_turns = params[0]
         if isinstance(angle_half_turns, float | int):
-            return _classify_rz_angle(float(angle_half_turns))
+            return _classify_half_turns(float(angle_half_turns))
         raise ValueError(
             f"circuit contains symbolic parameter in {op_type.name}({angle_half_turns}) "
             f"— resolve symbolic parameters before calling from_tket()"

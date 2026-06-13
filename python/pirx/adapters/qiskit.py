@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -18,6 +17,7 @@ except ImportError as e:
     ) from e
 
 import pirx
+from pirx.adapters._classify import classify_rz_angle as _classify_rz_angle
 
 _T_GATE_NAMES: frozenset[str] = frozenset({"t", "tdg"})
 
@@ -26,21 +26,6 @@ _MEASURE_NAMES: frozenset[str] = frozenset({"measure", "reset"})
 _ROTATION_NAMES: frozenset[str] = frozenset({"rz", "rx", "ry", "p"})
 
 _SKIP_NAMES: frozenset[str] = frozenset({"barrier", "delay", "id", "snapshot"})
-
-
-def _classify_rz_angle(angle_rad: float) -> dict[str, Any] | str:
-    """Classify an Rz rotation angle (in radians, Qiskit convention) into OpKind.
-
-    Odd multiples of pi/4 -> TGate, even multiples -> Clifford,
-    everything else -> Rotation.
-    """
-    k = angle_rad / (math.pi / 4)
-    k_rounded = round(k)
-    if abs(k - k_rounded) < 1e-10:
-        if int(k_rounded) % 2 != 0:
-            return "TGate"
-        return "Clifford"
-    return {"Rotation": {"angle": angle_rad}}
 
 
 def _classify_op(node) -> dict[str, Any] | str | None:

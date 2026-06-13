@@ -126,7 +126,6 @@ struct CircuitBuilder<'a> {
     t_count: u64,
     clifford_count: u64,
     rotation_count: u64,
-    measurement_count: u64,
     depth_at_qubit: Vec<u64>,
 }
 
@@ -142,7 +141,6 @@ impl<'a> CircuitBuilder<'a> {
             t_count: 0,
             clifford_count: 0,
             rotation_count: 0,
-            measurement_count: 0,
             depth_at_qubit: Vec::new(),
         }
     }
@@ -166,9 +164,15 @@ impl<'a> CircuitBuilder<'a> {
             | Stmt::Include(_)
             | Stmt::Pragma(_)
             | Stmt::Barrier(_)
-            | Stmt::Reset(_)
             | Stmt::NullStmt
             | Stmt::End => Ok(()),
+            Stmt::Reset(reset) => {
+                let qubits = self.resolve_measure_operand(reset.gate_operand())?;
+                for &q in &qubits {
+                    self.emit_operation(OpKind::Measurement { hook: None }, &[q]);
+                }
+                Ok(())
+            }
             Stmt::If(if_stmt) => self.walk_block(if_stmt.then_branch()),
             Stmt::While(w) => self.walk_block(w.loop_body()),
             Stmt::Block(b) => self.walk_block(b),
@@ -217,8 +221,8 @@ impl<'a> CircuitBuilder<'a> {
             .modifiers()
             .iter()
             .any(|m| matches!(m, GateModifier::Inv));
-        let params = self.evaluate_params(gc, &gate_name)?;
-        let kind = classify_gate(&gate_name, &params, has_inv);
+        let params = self.evaluate_params(gc, gate_name)?;
+        let kind = classify_gate(gate_name, &params, has_inv);
         let qubits = self.resolve_gate_qubits(gc)?;
 
         self.emit_operation(kind, &qubits);
@@ -274,20 +278,20 @@ impl<'a> CircuitBuilder<'a> {
             OpKind::TGate => self.t_count += 1,
             OpKind::Clifford => self.clifford_count += 1,
             OpKind::Rotation { .. } => self.rotation_count += 1,
-            OpKind::Measurement { .. } => self.measurement_count += 1,
+            OpKind::Measurement { .. } => {}
         }
 
         self.ops.push(op);
         self.next_id += 1;
     }
 
-    fn resolve_gate_name(&self, gc: &asg::GateCall) -> Result<String, OpenQasmError> {
+    fn resolve_gate_name(&self, gc: &asg::GateCall) -> Result<&str, OpenQasmError> {
         let sym_id = gc
             .name()
             .as_ref()
             .map_err(|_| OpenQasmError::Parse("unresolved gate name".into()))?;
         #[allow(clippy::indexing_slicing)]
-        Ok(self.symbol_table[sym_id].name().to_string())
+        Ok(self.symbol_table[sym_id].name())
     }
 
     fn evaluate_params(
@@ -304,8 +308,8 @@ impl<'a> CircuitBuilder<'a> {
             .collect()
     }
 
-    fn resolve_gate_qubits(&self, gc: &asg::GateCall) -> Result<Vec<QubitId>, OpenQasmError> {
-        let mut qubits = Vec::new();
+    fn resolve_gate_qubits(&self, gc: &asg::GateCall) -> Result<SmallVec<[QubitId; 2]>, OpenQasmError> {
+        let mut qubits = SmallVec::new();
         for texpr in gc.qubits() {
             match texpr.expression() {
                 Expr::GateOperand(GateOperand::Identifier(sym_result)) => {

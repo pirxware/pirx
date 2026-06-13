@@ -11,10 +11,15 @@ pub mod dag;
 pub mod engine;
 pub mod events;
 pub mod factory;
+pub mod monte_carlo;
 pub mod routing;
 pub mod trace;
 
 // Re-export primary types for downstream ergonomics.
 pub use analysis::{BottleneckType, ExecutionProfile, ProfileAnalyzer, StallRecord};
 pub use engine::{Engine, EngineConfig, EngineError};
+pub use monte_carlo::{
+    Distribution, MonteCarloConfig, MonteCarloError, MonteCarloResult, ReplicaSummary,
+    run_monte_carlo,
+};
 pub use trace::{SYNTHETIC_ID_FLAG, Trace, TraceEvent, TraceEventKind};

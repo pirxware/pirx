@@ -84,7 +84,20 @@ impl HardwareModel {
                     return Err(HardwareModelError::InvalidAbortProbability(ap));
                 }
             }
-            FactoryConfig::RzSynthesis { .. } => {}
+            FactoryConfig::RzSynthesis {
+                mean_cycles_per_state,
+                distinct_angles,
+                ..
+            } => {
+                if *mean_cycles_per_state <= 0.0 || mean_cycles_per_state.is_nan() {
+                    return Err(HardwareModelError::InvalidMeanCyclesPerState(
+                        *mean_cycles_per_state,
+                    ));
+                }
+                if *distinct_angles == 0 {
+                    return Err(HardwareModelError::ZeroDistinctAngles);
+                }
+            }
         }
 
         // Injection
@@ -101,8 +114,17 @@ impl HardwareModel {
                     return Err(HardwareModelError::InvalidOverheadFraction(of));
                 }
             }
-            RoutingConfig::Manhattan { .. } => {
-                // grid_width, grid_height, cycles_per_hop are u32 — no invalid values.
+            RoutingConfig::Manhattan {
+                grid_width,
+                grid_height,
+                cycles_per_hop,
+            } => {
+                if *grid_width == 0 || *grid_height == 0 {
+                    return Err(HardwareModelError::ZeroGridDimension);
+                }
+                if *cycles_per_hop == 0 {
+                    return Err(HardwareModelError::ZeroCyclesPerHop);
+                }
             }
         }
 

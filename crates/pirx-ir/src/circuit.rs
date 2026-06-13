@@ -101,9 +101,12 @@ pub enum OpKind {
 /// - Everything else → [`OpKind::Rotation`]
 #[must_use]
 pub fn classify_rz_angle(angle: f64) -> OpKind {
+    if !angle.is_finite() {
+        return OpKind::Rotation { angle };
+    }
     let k = angle / std::f64::consts::FRAC_PI_4;
     let k_rounded = k.round();
-    if (k - k_rounded).abs() < 1e-10 {
+    if (k - k_rounded).abs() < 1e-10 && k_rounded.abs() < i64::MAX as f64 {
         #[allow(clippy::cast_possible_truncation)]
         let k_int = k_rounded as i64;
         if k_int % 2 != 0 {

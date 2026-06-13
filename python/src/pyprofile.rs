@@ -95,12 +95,12 @@ impl PyExecutionProfile {
 
     #[getter]
     fn cumulative_magic_states<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        PyList::new(py, &self.inner.cumulative_magic_states)
+        PyList::new(py, self.inner.cumulative_magic_states())
     }
 
     #[getter]
     fn cumulative_infidelity<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        PyList::new(py, &self.inner.cumulative_infidelity)
+        PyList::new(py, self.inner.cumulative_infidelity())
     }
 
     #[getter]

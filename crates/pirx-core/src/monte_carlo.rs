@@ -237,22 +237,19 @@ fn extract_summary(trace: &Trace, seed: u64, factory_count: u16) -> ReplicaSumma
     let mut injection_errors: u64 = 0;
     let mut fixups_inserted: u64 = 0;
     let mut buffer_full_events: u64 = 0;
-    let mut magic_states_consumed: u64 = 0;
 
     let mut total_factory_active_cycles: u64 = 0;
     let mut factory_starts: Vec<Option<u64>> = vec![None; usize::from(factory_count)];
 
     for event in &trace.events {
         match &event.kind {
-            TraceEventKind::GateServed { wait, .. } => {
+            TraceEventKind::GateServed { wait, .. } if *wait > 0 => {
                 let w = u64::from(*wait);
-                if w > 0 {
-                    stall_count += 1;
-                    total_stall_cycles = total_stall_cycles.saturating_add(w);
-                    max_stall_cycles = max_stall_cycles.max(w);
-                }
-                magic_states_consumed = magic_states_consumed.saturating_add(1);
+                stall_count += 1;
+                total_stall_cycles = total_stall_cycles.saturating_add(w);
+                max_stall_cycles = max_stall_cycles.max(w);
             }
+            TraceEventKind::GateServed { .. } => {}
             TraceEventKind::InjectionError { .. } => injection_errors += 1,
             TraceEventKind::FixupInserted { .. } => fixups_inserted += 1,
             TraceEventKind::BufferFull => buffer_full_events += 1,
@@ -301,8 +298,8 @@ fn extract_summary(trace: &Trace, seed: u64, factory_count: u16) -> ReplicaSumma
         fixups_inserted,
         mean_factory_utilization: mean_utilization,
         buffer_full_events,
-        magic_states_consumed,
-        total_infidelity: magic_states_consumed as f64 * trace.p_logical,
+        magic_states_consumed: trace.magic_states_consumed,
+        total_infidelity: trace.magic_states_consumed as f64 * trace.p_logical,
     }
 }
 

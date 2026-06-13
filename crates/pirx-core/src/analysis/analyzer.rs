@@ -36,7 +36,6 @@ impl ProfileAnalyzer {
         let mut fixups_inserted: u64 = 0;
         let mut critical_path_extension: u64 = 0;
         let mut magic_states_per_bucket = vec![0u64; num_buckets];
-        let mut total_magic_states: u64 = 0;
 
         // Per-factory start cycle for active-interval tracking.
         // Dense Vec indexed by factory_id — u16 keyspace, no hash overhead.
@@ -114,7 +113,6 @@ impl ProfileAnalyzer {
                             *c = c.saturating_add(1);
                         }
                     }
-                    total_magic_states = total_magic_states.saturating_add(1);
                     if let Some(count) = magic_states_per_bucket.get_mut(b) {
                         *count = count.saturating_add(1);
                     }
@@ -190,20 +188,9 @@ impl ProfileAnalyzer {
             })
             .collect();
 
-        // Cumulative magic state consumption and infidelity.
         let p_logical = trace.p_logical;
-        let mut cumulative_magic_states = vec![0u64; num_buckets];
-        let mut running_ms: u64 = 0;
-        for (i, &count) in magic_states_per_bucket.iter().enumerate() {
-            running_ms = running_ms.saturating_add(count);
-            if let Some(slot) = cumulative_magic_states.get_mut(i) {
-                *slot = running_ms;
-            }
-        }
-        let cumulative_infidelity: Vec<f64> = cumulative_magic_states
-            .iter()
-            .map(|&c| c as f64 * p_logical)
-            .collect();
+        let total_magic_states = trace.magic_states_consumed;
+        #[allow(clippy::cast_precision_loss)]
         let total_infidelity = total_magic_states as f64 * p_logical;
 
         ExecutionProfile {
@@ -219,8 +206,6 @@ impl ProfileAnalyzer {
             p_logical,
             magic_states_consumed: total_magic_states,
             total_infidelity,
-            cumulative_magic_states,
-            cumulative_infidelity,
             magic_states_per_bucket,
         }
     }

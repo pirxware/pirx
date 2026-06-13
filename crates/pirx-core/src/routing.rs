@@ -13,7 +13,7 @@ pub(crate) trait RoutingModel: Send {
 }
 
 /// Fixed overhead per multi-qubit gate. Ignores topology.
-pub struct ScalarRouting {
+pub(crate) struct ScalarRouting {
     pub overhead_cycles: u32,
 }
 
@@ -28,7 +28,7 @@ impl RoutingModel for ScalarRouting {
 }
 
 /// Manhattan distance on a logical qubit grid.
-pub struct ManhattanRouting {
+pub(crate) struct ManhattanRouting {
     pub cycles_per_hop: u32,
 }
 
@@ -51,7 +51,10 @@ impl RoutingModel for ManhattanRouting {
 
 /// Build a flat position index from `GridPosition` slice.
 /// Index is `qubit_id → (row, col)`, sized to `qubit_count`.
-pub fn build_position_index(positions: &[GridPosition], qubit_count: u32) -> Vec<(u32, u32)> {
+pub(crate) fn build_position_index(
+    positions: &[GridPosition],
+    qubit_count: u32,
+) -> Vec<(u32, u32)> {
     let mut idx = vec![(0u32, 0u32); qubit_count as usize];
     for pos in positions {
         if let Some(slot) = idx.get_mut(pos.qubit as usize) {
@@ -62,7 +65,7 @@ pub fn build_position_index(positions: &[GridPosition], qubit_count: u32) -> Vec
 }
 
 /// Enum dispatch for routing models — zero vtable overhead, inlineable.
-pub enum RoutingKind {
+pub(crate) enum RoutingKind {
     Scalar(ScalarRouting),
     Manhattan(ManhattanRouting),
 }
@@ -78,7 +81,7 @@ impl RoutingModel for RoutingKind {
 
 /// Build routing model from config. Scalar converts `overhead_fraction`
 /// to a fixed cycle count (fraction × 10, rounded up).
-pub fn from_config(config: &RoutingConfig) -> RoutingKind {
+pub(crate) fn from_config(config: &RoutingConfig) -> RoutingKind {
     match config {
         RoutingConfig::Scalar { overhead_fraction } => {
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]

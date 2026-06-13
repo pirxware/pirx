@@ -372,7 +372,8 @@ proptest! {
         let factory_count = hw.factory.count().min(u32::from(u16::MAX)) as u16;
         let profile = pirx_core::ProfileAnalyzer::analyze(&trace, factory_count, 5);
 
-        for w in profile.cumulative_infidelity.windows(2) {
+        let cumulative = profile.cumulative_infidelity();
+        for w in cumulative.windows(2) {
             prop_assert!(
                 w[1] >= w[0],
                 "cumulative_infidelity must be non-decreasing: {} followed by {}",

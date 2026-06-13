@@ -59,10 +59,38 @@ pub struct ExecutionProfile {
     pub magic_states_consumed: u64,
     /// Total accumulated infidelity: `magic_states_consumed × p_logical`.
     pub total_infidelity: f64,
-    /// Per-bucket cumulative magic states consumed (running sum at bucket boundary).
-    pub cumulative_magic_states: Vec<u64>,
-    /// Per-bucket cumulative infidelity (running sum × p_logical).
-    pub cumulative_infidelity: Vec<f64>,
     /// Per-bucket magic states consumed in this bucket.
     pub magic_states_per_bucket: Vec<u64>,
+}
+
+impl ExecutionProfile {
+    /// Per-bucket cumulative magic states consumed (running sum at bucket boundary).
+    ///
+    /// Computed on demand from [`magic_states_per_bucket`](Self::magic_states_per_bucket).
+    pub fn cumulative_magic_states(&self) -> Vec<u64> {
+        let mut running = 0u64;
+        self.magic_states_per_bucket
+            .iter()
+            .map(|&c| {
+                running = running.saturating_add(c);
+                running
+            })
+            .collect()
+    }
+
+    /// Per-bucket cumulative infidelity (running sum × `p_logical`).
+    ///
+    /// Computed on demand from [`magic_states_per_bucket`](Self::magic_states_per_bucket)
+    /// and [`p_logical`](Self::p_logical).
+    #[allow(clippy::cast_precision_loss)]
+    pub fn cumulative_infidelity(&self) -> Vec<f64> {
+        let mut running = 0u64;
+        self.magic_states_per_bucket
+            .iter()
+            .map(|&c| {
+                running = running.saturating_add(c);
+                running as f64 * self.p_logical
+            })
+            .collect()
+    }
 }

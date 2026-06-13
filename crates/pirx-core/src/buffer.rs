@@ -4,7 +4,7 @@
 ///
 /// Full => factory output is wasted. Empty => T-gate stalls. No allocation; state is
 /// a single bounded counter.
-pub struct MagicStateBuffer {
+pub(crate) struct MagicStateBuffer {
     capacity: u32,
     occupancy: u32,
 }
@@ -51,12 +51,14 @@ impl MagicStateBuffer {
     }
 
     /// `true` when no more states can be enqueued.
+    #[cfg(test)]
     #[inline]
     pub fn is_full(&self) -> bool {
         self.occupancy >= self.capacity
     }
 
     /// `true` when no states are available for dequeue.
+    #[cfg(test)]
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.occupancy == 0

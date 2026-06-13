@@ -12,7 +12,6 @@ pub use cultivation::CultivationFactory;
 pub use distillation::DistillationFactory;
 use pirx_hw::model::{FactoryConfig, QecConfig};
 use rand_chacha::ChaCha12Rng;
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// Errors that can occur during factory construction.
@@ -23,7 +22,7 @@ pub enum FactoryError {
 }
 
 /// Outcome of a single factory production attempt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FactoryOutcome {
     /// Production succeeds at `completion_cycle`.
     Produced { completion_cycle: u64 },
@@ -49,6 +48,31 @@ pub trait FactoryModel: Send {
     fn name(&self) -> &str;
 }
 
+/// Enum dispatch for factory models — zero vtable overhead, inlineable.
+///
+/// Traits define the contract; enum realizes the dispatch. When a new factory
+/// type is implemented, add a variant here and delegate.
+pub enum FactoryKind {
+    Distillation(DistillationFactory),
+    Cultivation(CultivationFactory),
+}
+
+impl FactoryModel for FactoryKind {
+    fn schedule_production(&self, current_cycle: u64, rng: &mut ChaCha12Rng) -> FactoryOutcome {
+        match self {
+            Self::Distillation(f) => f.schedule_production(current_cycle, rng),
+            Self::Cultivation(f) => f.schedule_production(current_cycle, rng),
+        }
+    }
+
+    fn name(&self) -> &str {
+        match self {
+            Self::Distillation(f) => f.name(),
+            Self::Cultivation(f) => f.name(),
+        }
+    }
+}
+
 /// Create `config.count()` factory instances from already-parsed hardware config.
 ///
 /// `qec.code_distance` is forwarded to cultivation factories, which divide
@@ -61,7 +85,7 @@ pub trait FactoryModel: Send {
 pub fn create_factories(
     config: &FactoryConfig,
     qec: &QecConfig,
-) -> Result<Vec<Box<dyn FactoryModel>>, FactoryError> {
+) -> Result<Vec<FactoryKind>, FactoryError> {
     match config {
         FactoryConfig::Distillation {
             count,
@@ -71,11 +95,11 @@ pub fn create_factories(
             ..
         } => Ok((0..*count)
             .map(|_| {
-                Box::new(DistillationFactory {
+                FactoryKind::Distillation(DistillationFactory {
                     cycles_per_round: *cycles_per_round,
                     rounds: *rounds,
                     abort_probability: *abort_probability,
-                }) as Box<dyn FactoryModel>
+                })
             })
             .collect()),
 
@@ -83,10 +107,10 @@ pub fn create_factories(
             count, lambda_raw, ..
         } => Ok((0..*count)
             .map(|_| {
-                Box::new(CultivationFactory {
+                FactoryKind::Cultivation(CultivationFactory {
                     lambda_raw: *lambda_raw,
                     code_distance: qec.code_distance,
-                }) as Box<dyn FactoryModel>
+                })
             })
             .collect()),
 
@@ -99,7 +123,7 @@ pub fn create_factories(
 mod tests {
     use pirx_hw::model::{DistillationProtocol, FactoryConfig};
 
-    use super::create_factories;
+    use super::{FactoryModel, create_factories};
 
     fn cultivation_config(count: u32) -> FactoryConfig {
         FactoryConfig::Cultivation {

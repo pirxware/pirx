@@ -13,7 +13,6 @@ repository.workspace = true
 pirx-ir = { workspace = true }
 pirx-hw = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
 slotmap = { workspace = true }
 smallvec = { workspace = true }
 rand = { workspace = true }

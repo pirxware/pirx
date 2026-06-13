@@ -23,7 +23,7 @@ use crate::{
     buffer::MagicStateBuffer,
     dag::{Dag, DagBuild, FifoReadyQueue, OpKey, ReadyQueue},
     events::{EngineEvent, EventQueue},
-    factory::{FactoryModel, FactoryOutcome, create_factories},
+    factory::{FactoryKind, FactoryModel, FactoryOutcome, create_factories},
     routing,
     trace::{Trace, TraceCollector, TraceEventKind},
 };
@@ -39,13 +39,13 @@ use crate::{
 pub struct Engine {
     // Circuit state
     pub(crate) dag: Dag,
-    pub(crate) ready_set: Box<dyn ReadyQueue>,
+    pub(crate) ready_set: FifoReadyQueue,
 
     // Hardware state
     pub(crate) injection_error_probability: f64,
-    pub(crate) factories: Vec<Box<dyn FactoryModel>>,
+    pub(crate) factories: Vec<FactoryKind>,
     pub(crate) buffer: MagicStateBuffer,
-    pub(crate) routing: Box<dyn routing::RoutingModel>,
+    pub(crate) routing: routing::RoutingKind,
     pub(crate) position_index: Vec<(u32, u32)>,
 
     // Simulation state
@@ -152,7 +152,7 @@ impl Engine {
             .collect();
 
         // Build initial ready set: all ops with predecessor_count == 0.
-        let mut ready_set = Box::new(FifoReadyQueue::with_capacity(n_ops)) as Box<dyn ReadyQueue>;
+        let mut ready_set = FifoReadyQueue::with_capacity(n_ops);
         for &key in &dag.initial_ready_set() {
             ready_set.push(key);
         }
@@ -193,7 +193,7 @@ impl Engine {
         }
 
         // Schedule initial factory events and record FactoryStarted at cycle 0.
-        let mut event_queue = EventQueue::new();
+        let mut event_queue = EventQueue::with_capacity(factory_count.saturating_mul(2));
         for (id, factory) in factories.iter().enumerate() {
             // factory_id: u16 per design — 65 535 max, more than any real architecture.
             #[allow(clippy::cast_possible_truncation)]

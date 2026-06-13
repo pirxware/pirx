@@ -9,9 +9,6 @@ pub enum BottleneckType {
     None,
     /// T-gates are waiting for magic states (buffer empty with pending demand).
     FactoryThroughput,
-    /// Operations are waiting for routing paths.
-    /// Placeholder — the scalar routing model produces no routing contention.
-    RoutingContention,
     /// Both factory failures and gate stalls occurred in the same bucket.
     Balanced,
 }

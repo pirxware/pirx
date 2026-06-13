@@ -1,6 +1,5 @@
 //! DAG adjacency maps — held separately from node data for cache locality.
 
-use serde::{Deserialize, Serialize};
 use slotmap::SecondaryMap;
 use smallvec::SmallVec;
 
@@ -10,7 +9,7 @@ use super::kind::OpKey;
 ///
 /// Node data is hot during scheduling; adjacency is hot during ready-set
 /// computation. Separate `SecondaryMap`s let them occupy different cache lines.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug)]
 pub struct DagAdjacency {
     /// Successor keys for each node.
     ///

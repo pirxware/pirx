@@ -52,4 +52,16 @@ pub enum HardwareModelError {
 
     #[error("buffer preload {preload} exceeds capacity {capacity}")]
     PreloadExceedsCapacity { preload: u32, capacity: u32 },
+
+    #[error("mean_cycles_per_state must be positive and finite: {0}")]
+    InvalidMeanCyclesPerState(f64),
+
+    #[error("distinct_angles must be greater than zero")]
+    ZeroDistinctAngles,
+
+    #[error("grid dimensions must be greater than zero")]
+    ZeroGridDimension,
+
+    #[error("cycles_per_hop must be greater than zero")]
+    ZeroCyclesPerHop,
 }

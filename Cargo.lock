@@ -784,7 +784,6 @@ name = "pirx-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
- "pirx-adapters",
  "pirx-core",
  "pirx-hw",
  "pirx-ir",
@@ -809,7 +808,6 @@ dependencies = [
  "rand_distr",
  "rayon",
  "serde",
- "serde_json",
  "slotmap",
  "smallvec",
  "thiserror",

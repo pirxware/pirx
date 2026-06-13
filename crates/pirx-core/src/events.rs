@@ -80,6 +80,14 @@ impl EventQueue {
         }
     }
 
+    /// Create an event queue pre-allocated for `capacity` events.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            heap: BinaryHeap::with_capacity(capacity),
+            next_seq: 0,
+        }
+    }
+
     /// Schedule an event to be delivered at `cycle`.
     pub fn schedule(&mut self, cycle: u64, event: EngineEvent) {
         let seq = self.next_seq;

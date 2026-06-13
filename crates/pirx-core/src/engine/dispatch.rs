@@ -5,9 +5,10 @@ use rand::Rng as _;
 
 use super::Engine;
 use crate::{
-    dag::{OpKey, OpKind},
+    dag::{OpKey, OpKind, ReadyQueue},
     events::{EngineEvent, TimedEvent},
-    factory::FactoryOutcome,
+    factory::{FactoryModel, FactoryOutcome},
+    routing::RoutingModel,
     trace::{SYNTHETIC_ID_FLAG, TraceEventKind},
 };
 
@@ -56,7 +57,7 @@ impl Engine {
                     self.trace
                         .record(event.cycle, TraceEventKind::GateCompleted { gate: gate_id });
                 }
-                self.completed_ops += 1;
+                self.completed_ops = self.completed_ops.saturating_add(1);
                 if !self.hook_table.is_empty() {
                     self.completed_set.insert(gate, ());
                 }
@@ -91,9 +92,9 @@ impl Engine {
                 self.current_cycle,
                 TraceEventKind::InjectionError { gate: gate_id },
             );
-            let fixup_key = self.dag.inject_fixup(gate, &mut *self.ready_set);
+            let fixup_key = self.dag.inject_fixup(gate, &mut self.ready_set);
             let synthetic_id = SYNTHETIC_ID_FLAG | self.next_synthetic_id;
-            self.next_synthetic_id += 1;
+            self.next_synthetic_id = self.next_synthetic_id.saturating_add(1);
             self.key_to_op_id.insert(fixup_key, synthetic_id);
             self.trace.record(
                 self.current_cycle,
@@ -103,7 +104,7 @@ impl Engine {
                 },
             );
             // Fixup is now in ready_set. Count it so is_complete() stays correct.
-            self.total_ops += 1;
+            self.total_ops = self.total_ops.saturating_add(1);
         } else {
             if let OpKind::Measurement {
                 hook: Some(hook_id),
@@ -111,7 +112,7 @@ impl Engine {
             {
                 self.dispatch_hook(gate, hook_id);
             }
-            self.dag.release_successors(gate, &mut *self.ready_set);
+            self.dag.release_successors(gate, &mut self.ready_set);
         }
     }
 
@@ -139,14 +140,14 @@ impl Engine {
         // Count activated ops now so is_complete() waits for them.
         let idx = hook_table_index(hook_id, outcome);
         if let Some(to_activate) = self.hook_table.get(idx) {
-            self.total_ops += to_activate.len() as u64;
+            self.total_ops = self.total_ops.saturating_add(to_activate.len() as u64);
         }
 
         if self.feedback_delay == 0 {
             self.activate_hook(gate, hook_id, outcome);
         } else {
             self.event_queue.schedule(
-                self.current_cycle + self.feedback_delay,
+                self.current_cycle.saturating_add(self.feedback_delay),
                 EngineEvent::HookActivation {
                     gate,
                     hook_id,
@@ -177,7 +178,7 @@ impl Engine {
         self.dag.activate_ops(
             to_activate,
             &|k| completed_set.contains_key(k),
-            &mut *self.ready_set,
+            &mut self.ready_set,
         );
 
         #[allow(clippy::cast_possible_truncation)]
@@ -274,7 +275,7 @@ impl Engine {
     fn schedule_gate_completion(&mut self, gate: crate::dag::OpKey) {
         let cost = self.total_gate_cost(gate);
         self.event_queue.schedule(
-            self.current_cycle + u64::from(cost),
+            self.current_cycle.saturating_add(u64::from(cost)),
             EngineEvent::GateCompleted { gate },
         );
     }

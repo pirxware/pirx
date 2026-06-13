@@ -1,6 +1,6 @@
 //! Pirx CLI — execution profiler for fault-tolerant quantum computing.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::Parser;
 
@@ -28,7 +28,7 @@ enum Cli {
         #[arg(long)]
         max_cycles: Option<u64>,
         /// Analysis resolution in cycles per bucket. Default: 10.
-        #[arg(long, default_value_t = 10)]
+        #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u64).range(1..))]
         resolution: u64,
     },
 }
@@ -57,9 +57,9 @@ impl CliError {
 }
 
 fn run_profile(
-    circuit: &PathBuf,
-    hw: &PathBuf,
-    output: &PathBuf,
+    circuit: &Path,
+    hw: &Path,
+    output: &Path,
     seed: u64,
     max_cycles: Option<u64>,
     resolution: u64,

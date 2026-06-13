@@ -6,7 +6,6 @@
 
 use rand::Rng as _;
 use rand_chacha::ChaCha12Rng;
-use serde::{Deserialize, Serialize};
 
 use super::{FactoryModel, FactoryOutcome};
 
@@ -15,7 +14,7 @@ use super::{FactoryModel, FactoryOutcome};
 /// Each of `rounds` rounds independently samples an abort check. The first
 /// aborting round ends production early; the engine restarts the factory
 /// immediately after `Failed`. All rounds clearing → `Produced`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct DistillationFactory {
     pub cycles_per_round: u32,
     pub rounds: u32,
@@ -25,16 +24,17 @@ pub struct DistillationFactory {
 
 impl FactoryModel for DistillationFactory {
     fn schedule_production(&self, current_cycle: u64, rng: &mut ChaCha12Rng) -> FactoryOutcome {
-        let total_cycles = u64::from(self.cycles_per_round) * u64::from(self.rounds);
+        let total_cycles = u64::from(self.cycles_per_round).saturating_mul(u64::from(self.rounds));
         for round in 0..self.rounds {
             if rng.random::<f64>() < self.abort_probability {
-                let failure_cycle =
-                    current_cycle + u64::from(self.cycles_per_round) * u64::from(round + 1);
+                let failure_cycle = current_cycle.saturating_add(
+                    u64::from(self.cycles_per_round).saturating_mul(u64::from(round + 1)),
+                );
                 return FactoryOutcome::Failed { failure_cycle };
             }
         }
         FactoryOutcome::Produced {
-            completion_cycle: current_cycle + total_cycles,
+            completion_cycle: current_cycle.saturating_add(total_cycles),
         }
     }
 

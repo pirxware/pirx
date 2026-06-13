@@ -136,13 +136,16 @@ jobs:
             exit 1
           }
 
-      # Same freshness gate for Python dependencies in python/uv.lock.
-      # Queries PyPI JSON API for each registry package.
+      # Same freshness gate for direct Python dependencies.
+      # Only checks packages listed in pyproject.toml (not transitive
+      # deps — those are managed by their own maintainers, and the
+      # Python ecosystem churns too fast to gate on 215+ transitives).
       - name: Python dependency freshness check
         run: |
           set -euo pipefail
           ALLOW_FILE=".github/freshness-allow.toml"
           LOCK="python/uv.lock"
+          PYPROJECT="python/pyproject.toml"
           [ -f "$LOCK" ] || { echo "No python/uv.lock — skipping"; exit 0; }
 
           MIN_AGE_DAYS=7
@@ -150,8 +153,9 @@ jobs:
           FAIL_FILE=$(mktemp)
           echo 0 > "$FAIL_FILE"
 
-          # Extract name+version pairs from registry packages only.
-          # Skip editable/path/git sources (local workspace packages).
+          # Extract direct dependency names from pyproject.toml
+          # (build-system requires, optional-dependencies, dependency-groups).
+          # Then look up their pinned versions from uv.lock.
           while read -r name version; do
             # Skip packages explicitly allowed (security-motivated upgrades)
             if [ -f "$ALLOW_FILE" ] && grep -qP "^\s*${name}\s*=\s*\"${version}\"" "$ALLOW_FILE" 2>/dev/null; then
@@ -184,15 +188,25 @@ jobs:
               echo 1 > "$FAIL_FILE"
             fi
           done < <(python3 -c "
-          import re
-          text = open('$LOCK').read()
-          for block in text.split('[[package]]')[1:]:
+          import re, sys
+
+          # Collect direct dep names from pyproject.toml
+          pyproject = open('$PYPROJECT').read()
+          direct = set()
+          for m in re.finditer(r'\"([a-zA-Z0-9_-]+)\s*[><=!]', pyproject):
+              direct.add(m.group(1).lower().replace('_', '-'))
+
+          # Look up pinned versions from uv.lock for direct deps only
+          lock = open('$LOCK').read()
+          for block in lock.split('[[package]]')[1:]:
               if 'registry' not in block:
                   continue
               nm = re.search(r'name\s*=\s*\"([^\"]+)\"', block)
               vr = re.search(r'version\s*=\s*\"([^\"]+)\"', block)
               if nm and vr:
-                  print(nm.group(1), vr.group(1))
+                  pkg = nm.group(1).lower().replace('_', '-')
+                  if pkg in direct:
+                      print(nm.group(1), vr.group(1))
           " | sort -u)
 
           FAIL=$(cat "$FAIL_FILE")

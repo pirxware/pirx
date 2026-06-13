@@ -6,13 +6,13 @@
 //! hardware model — nothing else.
 
 pub mod analysis;
-pub mod buffer;
+pub(crate) mod buffer;
 pub mod dag;
 pub mod engine;
-pub mod events;
+pub(crate) mod events;
 pub mod factory;
 pub mod monte_carlo;
-pub mod routing;
+pub(crate) mod routing;
 pub mod trace;
 
 // Re-export primary types for downstream ergonomics.

@@ -16,7 +16,7 @@ use crate::dag::OpKey;
 /// (injection error insertion, buffer updates) happen directly in the cycle
 /// loop without going through the queue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EngineEvent {
+pub(crate) enum EngineEvent {
     /// Factory finishes producing a magic state.
     FactoryProduced { factory_id: u16 },
     /// Factory production attempt fails (abort/restart).
@@ -33,7 +33,7 @@ pub enum EngineEvent {
 
 /// A timestamped, sequenced engine event for priority-queue ordering.
 #[derive(Debug, Clone, Copy)]
-pub struct TimedEvent {
+pub(crate) struct TimedEvent {
     pub cycle: u64,
     /// Monotonic insertion counter; never reset. Breaks ties within a cycle
     /// deterministically — events generated earlier in the same cycle process
@@ -66,7 +66,7 @@ impl Ord for TimedEvent {
 ///
 /// Deterministic: same event generation order → same seq values → same
 /// processing order → same trace.
-pub struct EventQueue {
+pub(crate) struct EventQueue {
     heap: BinaryHeap<Reverse<TimedEvent>>,
     next_seq: u64,
 }
@@ -106,6 +106,7 @@ impl EventQueue {
     }
 
     /// True when no events are pending.
+    #[cfg(test)]
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.heap.is_empty()

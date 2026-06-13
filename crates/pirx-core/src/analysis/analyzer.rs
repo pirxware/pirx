@@ -111,16 +111,9 @@ impl ProfileAnalyzer {
                     if let Some(c) = stalls_in_bucket.get_mut(b) {
                         *c = c.saturating_add(1);
                     }
-                    if let Some(count) = magic_states_per_bucket.get_mut(b) {
-                        *count = count.saturating_add(1);
-                    }
                 }
 
-                TraceEventKind::GateServed { .. } => {
-                    if let Some(count) = magic_states_per_bucket.get_mut(b) {
-                        *count = count.saturating_add(1);
-                    }
-                }
+                TraceEventKind::GateServed { .. } => {}
 
                 TraceEventKind::InjectionError { .. } => {
                     injection_errors += 1;
@@ -159,6 +152,17 @@ impl ProfileAnalyzer {
             }
             if let Some(d) = factory_active_deltas.get_mut(last_b + 1) {
                 *d -= 1;
+            }
+        }
+
+        // Per-bucket magic state histogram — dedicated pass to keep the main
+        // loop's zero-wait GateServed arm as a no-op.
+        for event in &trace.events {
+            if matches!(event.kind, TraceEventKind::GateServed { .. }) {
+                let b = to_bucket(event.cycle);
+                if let Some(count) = magic_states_per_bucket.get_mut(b) {
+                    *count = count.saturating_add(1);
+                }
             }
         }
 

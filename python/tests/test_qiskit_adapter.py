@@ -15,46 +15,6 @@ from qiskit.converters import circuit_to_dag  # noqa: E402
 from pirx.adapters.qiskit import from_qiskit, from_qiskit_dag  # noqa: E402
 
 # ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-SINGLE_FACTORY_TOML = """
-[meta]
-name = "test-single-factory"
-description = ""
-
-[qec]
-code_type = "surface_code"
-code_distance = 7
-physical_error_rate = 0.001
-
-[timing]
-cycle_time_us = 1.0
-
-[factory]
-type = "cultivation"
-count = 1
-lambda_raw = 0.002
-fault_distance = 3
-
-[injection]
-error_probability = 0.5
-fixup_cost_cycles = 1
-
-[routing]
-model = "scalar"
-
-[buffer]
-capacity = 4
-"""
-
-
-@pytest.fixture
-def hw():
-    return pirx.HardwareModel.from_toml_str(SINGLE_FACTORY_TOML)
-
-
-# ---------------------------------------------------------------------------
 # Gate classification
 # ---------------------------------------------------------------------------
 
@@ -325,24 +285,24 @@ class TestFromDag:
 
 
 class TestEndToEnd:
-    def test_profile_qiskit_circuit(self, hw):
+    def test_profile_qiskit_circuit(self, single_factory_hw):
         qc = QuantumCircuit(2)
         qc.h(0)
         qc.t(0)
         qc.cx(0, 1)
         circuit = from_qiskit(qc)
-        profile = pirx.profile(circuit, hw)
+        profile = pirx.profile(circuit, single_factory_hw)
         assert profile.total_cycles > 0
 
-    def test_deterministic(self, hw):
+    def test_deterministic(self, single_factory_hw):
         qc = QuantumCircuit(2)
         qc.h(0)
         qc.t(0)
         qc.cx(0, 1)
         qc.t(1)
         circuit = from_qiskit(qc)
-        p1 = pirx.profile(circuit, hw, seed=42)
-        p2 = pirx.profile(circuit, hw, seed=42)
+        p1 = pirx.profile(circuit, single_factory_hw, seed=42)
+        p2 = pirx.profile(circuit, single_factory_hw, seed=42)
         assert p1.to_json() == p2.to_json()
 
     def test_json_roundtrip(self):
@@ -357,7 +317,7 @@ class TestEndToEnd:
         assert restored.t_count == circuit.t_count
         assert restored.qubit_count == circuit.qubit_count
 
-    def test_larger_circuit(self, hw):
+    def test_larger_circuit(self, single_factory_hw):
         qc = QuantumCircuit(4)
         qc.h(0)
         qc.cx(0, 1)
@@ -371,5 +331,5 @@ class TestEndToEnd:
         assert circuit.qubit_count == 4
         assert circuit.t_count == 2
         assert circuit.rotation_count == 1
-        profile = pirx.profile(circuit, hw)
+        profile = pirx.profile(circuit, single_factory_hw)
         assert profile.total_cycles > 0

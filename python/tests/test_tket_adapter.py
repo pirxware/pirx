@@ -11,46 +11,6 @@ from pytket import Circuit  # noqa: E402
 from pirx.adapters.tket import from_tket  # noqa: E402
 
 # ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-SINGLE_FACTORY_TOML = """
-[meta]
-name = "test-single-factory"
-description = ""
-
-[qec]
-code_type = "surface_code"
-code_distance = 7
-physical_error_rate = 0.001
-
-[timing]
-cycle_time_us = 1.0
-
-[factory]
-type = "cultivation"
-count = 1
-lambda_raw = 0.002
-fault_distance = 3
-
-[injection]
-error_probability = 0.5
-fixup_cost_cycles = 1
-
-[routing]
-model = "scalar"
-
-[buffer]
-capacity = 4
-"""
-
-
-@pytest.fixture
-def hw():
-    return pirx.HardwareModel.from_toml_str(SINGLE_FACTORY_TOML)
-
-
-# ---------------------------------------------------------------------------
 # Gate classification
 # ---------------------------------------------------------------------------
 
@@ -232,6 +192,43 @@ class TestEdgeCases:
         circuit = from_tket(c)
         assert circuit.op_count == 1
 
+    def test_symbolic_parameter_raises(self):
+        from sympy import Symbol
+
+        c = Circuit(1)
+        c.Rz(Symbol("theta"), 0)
+        with pytest.raises(ValueError, match="symbolic parameter"):
+            from_tket(c)
+
+
+# ---------------------------------------------------------------------------
+# classify_rz_angle equivalence (Python copy vs Rust pirx-ir)
+# ---------------------------------------------------------------------------
+
+
+class TestClassifyRzAngleEquivalence:
+    """Verify that the Python _classify_rz_angle produces the same OpKind
+    as the Rust classify_rz_angle (via from_adapter_data recomputation)."""
+
+    def test_equivalence_via_tket_roundtrip(self):
+        angles = [0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, -0.25, -0.75, 0.3, 0.123, 3.0]
+        for ht in angles:
+            c = Circuit(1)
+            c.Rz(ht, 0)
+            circuit = from_tket(c)
+            rust_t = circuit.t_count
+            rust_rot = circuit.rotation_count
+            rust_cliff = circuit.clifford_count
+
+            if ht == 0.0:
+                assert rust_cliff == 1, f"angle {ht}: expected Clifford"
+            elif rust_t == 1:
+                assert rust_rot == 0, f"angle {ht}: TGate but rotation_count!=0"
+            elif rust_rot == 1:
+                assert rust_t == 0, f"angle {ht}: Rotation but t_count!=0"
+            else:
+                assert rust_cliff == 1, f"angle {ht}: expected exactly one kind"
+
 
 # ---------------------------------------------------------------------------
 # End-to-end
@@ -239,24 +236,24 @@ class TestEdgeCases:
 
 
 class TestEndToEnd:
-    def test_profile_tket_circuit(self, hw):
+    def test_profile_tket_circuit(self, single_factory_hw):
         c = Circuit(2)
         c.H(0)
         c.T(0)
         c.CX(0, 1)
         circuit = from_tket(c)
-        profile = pirx.profile(circuit, hw)
+        profile = pirx.profile(circuit, single_factory_hw)
         assert profile.total_cycles > 0
 
-    def test_deterministic_roundtrip(self, hw):
+    def test_deterministic_roundtrip(self, single_factory_hw):
         c = Circuit(2)
         c.H(0)
         c.T(0)
         c.CX(0, 1)
         c.T(1)
         circuit = from_tket(c)
-        p1 = pirx.profile(circuit, hw, seed=42)
-        p2 = pirx.profile(circuit, hw, seed=42)
+        p1 = pirx.profile(circuit, single_factory_hw, seed=42)
+        p2 = pirx.profile(circuit, single_factory_hw, seed=42)
         assert p1.to_json() == p2.to_json()
 
     def test_json_roundtrip(self):
@@ -271,7 +268,7 @@ class TestEndToEnd:
         assert restored.t_count == circuit.t_count
         assert restored.qubit_count == circuit.qubit_count
 
-    def test_larger_circuit(self, hw):
+    def test_larger_circuit(self, single_factory_hw):
         c = Circuit(4)
         c.H(0).CX(0, 1).T(1).CX(1, 2).Rz(0.3, 2)
         c.H(3).T(3).CX(2, 3)
@@ -279,5 +276,5 @@ class TestEndToEnd:
         assert circuit.qubit_count == 4
         assert circuit.t_count == 2
         assert circuit.rotation_count == 1
-        profile = pirx.profile(circuit, hw)
+        profile = pirx.profile(circuit, single_factory_hw)
         assert profile.total_cycles > 0

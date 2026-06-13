@@ -388,7 +388,7 @@ impl<'a> CircuitBuilder<'a> {
 fn classify_gate(name: &str, params: &[f64], has_inv: bool) -> OpKind {
     match name {
         "t" | "tdg" => OpKind::TGate,
-        "rz" | "p" | "u1" | "phase" => {
+        "rz" | "rx" | "ry" | "p" | "u1" | "phase" => {
             let Some(&angle) = params.first() else {
                 return OpKind::Clifford;
             };
@@ -557,6 +557,37 @@ mod tests {
         let src = make_source("qubit q;\nrz(pi/2) q;\n");
         let circuit = parse(&src);
         assert_eq!(circuit.ops[0].kind, OpKind::Clifford);
+    }
+
+    #[test]
+    fn rx_pi_over_4_classified_as_tgate() {
+        let src = make_source("qubit q;\nrx(pi/4) q;\n");
+        let circuit = parse(&src);
+        assert_eq!(circuit.ops[0].kind, OpKind::TGate);
+        assert_eq!(circuit.metadata.t_count, 1);
+    }
+
+    #[test]
+    fn ry_pi_over_4_classified_as_tgate() {
+        let src = make_source("qubit q;\nry(pi/4) q;\n");
+        let circuit = parse(&src);
+        assert_eq!(circuit.ops[0].kind, OpKind::TGate);
+        assert_eq!(circuit.metadata.t_count, 1);
+    }
+
+    #[test]
+    fn rx_pi_over_2_classified_as_clifford() {
+        let src = make_source("qubit q;\nrx(pi/2) q;\n");
+        let circuit = parse(&src);
+        assert_eq!(circuit.ops[0].kind, OpKind::Clifford);
+    }
+
+    #[test]
+    fn ry_arbitrary_classified_as_rotation() {
+        let src = make_source("qubit q;\nry(0.3) q;\n");
+        let circuit = parse(&src);
+        assert!(matches!(circuit.ops[0].kind, OpKind::Rotation { .. }));
+        assert_eq!(circuit.metadata.rotation_count, 1);
     }
 
     #[test]

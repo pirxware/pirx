@@ -263,7 +263,7 @@ fn classify_op(op_type: OpType, params: &Option<Vec<String>>) -> Result<OpKind, 
     match op_type {
         OpType::T | OpType::Tdg => Ok(OpKind::TGate),
         OpType::Measure | OpType::Collapse => Ok(OpKind::Measurement { hook: None }),
-        OpType::Rz | OpType::U1 | OpType::Phase => {
+        OpType::Rz | OpType::Rx | OpType::Ry | OpType::U1 | OpType::Phase => {
             let op_type_name = op_type.to_string();
             let angle_halfturns = parse_first_param(params, &op_type_name)?;
             let angle_radians = angle_halfturns * std::f64::consts::PI;
@@ -368,6 +368,34 @@ mod tests {
         // 1.0 half-turns = π radians → Clifford (4× π/4)
         let angle = 1.0 * std::f64::consts::PI;
         assert!(matches!(classify_rz_angle(angle), OpKind::Clifford));
+    }
+
+    #[test]
+    fn rx_pi_over_4_classified_as_tgate() {
+        let params = Some(vec!["0.25".into()]);
+        let kind = classify_op(OpType::Rx, &params).unwrap();
+        assert_eq!(kind, OpKind::TGate);
+    }
+
+    #[test]
+    fn ry_pi_over_4_classified_as_tgate() {
+        let params = Some(vec!["0.25".into()]);
+        let kind = classify_op(OpType::Ry, &params).unwrap();
+        assert_eq!(kind, OpKind::TGate);
+    }
+
+    #[test]
+    fn rx_pi_over_2_classified_as_clifford() {
+        let params = Some(vec!["0.5".into()]);
+        let kind = classify_op(OpType::Rx, &params).unwrap();
+        assert_eq!(kind, OpKind::Clifford);
+    }
+
+    #[test]
+    fn ry_arbitrary_classified_as_rotation() {
+        let params = Some(vec!["0.3".into()]);
+        let kind = classify_op(OpType::Ry, &params).unwrap();
+        assert!(matches!(kind, OpKind::Rotation { .. }));
     }
 
     #[test]

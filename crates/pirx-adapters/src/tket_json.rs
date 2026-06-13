@@ -195,7 +195,6 @@ fn is_structural(op_type: OpType) -> bool {
             | OpType::Goto
             | OpType::Stop
             | OpType::noop
-            | OpType::Reset
     )
 }
 
@@ -262,7 +261,7 @@ fn is_classical(op_type: OpType) -> bool {
 fn classify_op(op_type: OpType, params: &Option<Vec<String>>) -> Result<OpKind, TketJsonError> {
     match op_type {
         OpType::T | OpType::Tdg => Ok(OpKind::TGate),
-        OpType::Measure | OpType::Collapse => Ok(OpKind::Measurement { hook: None }),
+        OpType::Measure | OpType::Collapse | OpType::Reset => Ok(OpKind::Measurement { hook: None }),
         OpType::Rz | OpType::Rx | OpType::Ry | OpType::U1 | OpType::Phase => {
             let op_type_name = op_type.to_string();
             let angle_halfturns = parse_first_param(params, &op_type_name)?;
@@ -429,8 +428,8 @@ mod tests {
     #[test]
     fn structural_ops_skipped() {
         assert!(is_structural(OpType::Barrier));
-        assert!(is_structural(OpType::Reset));
         assert!(is_structural(OpType::noop));
+        assert!(!is_structural(OpType::Reset));
         assert!(!is_structural(OpType::H));
         assert!(!is_structural(OpType::T));
     }

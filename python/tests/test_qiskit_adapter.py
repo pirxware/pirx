@@ -75,6 +75,31 @@ class TestGateClassification:
         circuit = from_qiskit(qc)
         assert circuit.clifford_count == 1
 
+    def test_rx_pi_over_4_is_t_gate(self):
+        qc = QuantumCircuit(1)
+        qc.rx(math.pi / 4, 0)
+        circuit = from_qiskit(qc)
+        assert circuit.t_count == 1
+
+    def test_ry_pi_over_4_is_t_gate(self):
+        qc = QuantumCircuit(1)
+        qc.ry(math.pi / 4, 0)
+        circuit = from_qiskit(qc)
+        assert circuit.t_count == 1
+
+    def test_rx_pi_over_2_is_clifford(self):
+        qc = QuantumCircuit(1)
+        qc.rx(math.pi / 2, 0)
+        circuit = from_qiskit(qc)
+        assert circuit.clifford_count == 1
+        assert circuit.t_count == 0
+
+    def test_ry_arbitrary_is_rotation(self):
+        qc = QuantumCircuit(1)
+        qc.ry(0.3, 0)
+        circuit = from_qiskit(qc)
+        assert circuit.rotation_count == 1
+
     def test_p_gate_classified(self):
         qc = QuantumCircuit(1)
         qc.p(0.3, 0)

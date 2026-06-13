@@ -41,7 +41,6 @@ _LEAF_GATE_NAMES: frozenset[str] = frozenset(
         "GlobalPhase",
         "Toffoli",
         "Swap",
-        "Identity",
         "TwoBitCSwap",
         "XPowGate",
         "YPowGate",
@@ -59,7 +58,6 @@ _SKIP_BLOQ_NAMES: frozenset[str] = frozenset(
         "Free",
         "Cast",
         "Partition",
-        "ArbitraryClifford",
     }
 )
 
@@ -106,9 +104,6 @@ def _classify_bloq(bloq: Bloq) -> dict[str, Any] | str | None:
         if angle is not None:
             return _classify_rz_angle(angle)
         return {"Rotation": {"angle": 0.0}}
-
-    if name == "Toffoli":
-        return "Clifford"
 
     return "Clifford"
 
@@ -193,7 +188,6 @@ def _extract_ops(
     as_composite_bloq, connections, bloq_instances).
     """
     from qualtran import DecomposeNotImplementedError
-    from qualtran._infra.composite_bloq import BloqInstance
 
     if _is_skip(bloq):
         return [], [], next_id
@@ -290,9 +284,6 @@ def _extract_ops(
     for conn in cbloq.connections:
         left_binst = conn.left.binst
         right_binst = conn.right.binst
-
-        if not isinstance(left_binst, BloqInstance) or not isinstance(right_binst, BloqInstance):
-            continue
 
         left_id = binst_to_last.get(id(left_binst))
         right_id = binst_to_first.get(id(right_binst))

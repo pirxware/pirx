@@ -17,6 +17,8 @@ def classify_rz_angle(angle_rad: float) -> dict[str, Any] | str:
     Odd multiples of pi/4 -> TGate, even multiples -> Clifford,
     everything else -> Rotation.
     """
+    if not math.isfinite(angle_rad):
+        return {"Rotation": {"angle": angle_rad}}
     k = angle_rad / (math.pi / 4)
     k_rounded = round(k)
     if abs(k - k_rounded) < 1e-10:

@@ -71,6 +71,31 @@ class TestGateClassification:
         circuit = from_tket(c)
         assert circuit.clifford_count == 1
 
+    def test_rx_pi_over_4_is_t_gate(self):
+        c = Circuit(1)
+        c.Rx(0.25, 0)  # 0.25 half-turns = pi/4 radians
+        circuit = from_tket(c)
+        assert circuit.t_count == 1
+
+    def test_ry_pi_over_4_is_t_gate(self):
+        c = Circuit(1)
+        c.Ry(0.25, 0)
+        circuit = from_tket(c)
+        assert circuit.t_count == 1
+
+    def test_rx_pi_over_2_is_clifford(self):
+        c = Circuit(1)
+        c.Rx(0.5, 0)  # 0.5 half-turns = pi/2 radians
+        circuit = from_tket(c)
+        assert circuit.clifford_count == 1
+        assert circuit.t_count == 0
+
+    def test_ry_arbitrary_is_rotation(self):
+        c = Circuit(1)
+        c.Ry(0.3, 0)
+        circuit = from_tket(c)
+        assert circuit.rotation_count == 1
+
     def test_measure_classified(self):
         c = Circuit(1, 1)
         c.H(0)

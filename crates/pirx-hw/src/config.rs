@@ -48,6 +48,24 @@ pub struct QecConfig {
     pub logical_error_prefactor: f64,
 }
 
+impl QecConfig {
+    /// Logical error probability per magic state.
+    ///
+    /// p_L = prefactor × (p_phys / p_threshold)^((d+1)/2)
+    ///
+    /// Returns 0.0 if the result is non-finite or negative.
+    pub fn logical_error_rate(&self) -> f64 {
+        let ratio = self.physical_error_rate / self.error_correction_threshold;
+        let exponent = f64::from(self.code_distance + 1) / 2.0;
+        let p_l = self.logical_error_prefactor * ratio.powf(exponent);
+        if p_l.is_finite() && p_l >= 0.0 {
+            p_l
+        } else {
+            0.0
+        }
+    }
+}
+
 fn default_error_correction_threshold() -> f64 {
     0.01
 }

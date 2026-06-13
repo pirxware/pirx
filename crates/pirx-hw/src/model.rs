@@ -412,4 +412,59 @@ capacity = 4
             .replace("fixup_cost_cycles = 1", "fixup_cost_cycles = 0");
         assert!(load(&toml).is_ok());
     }
+
+    // ── logical_error_rate ───────────────────────────────────────────────────
+
+    fn qec(code_distance: u32, physical_error_rate: f64) -> QecConfig {
+        QecConfig {
+            code_type: CodeType::SurfaceCode,
+            code_distance,
+            physical_error_rate,
+            error_correction_threshold: 0.01,
+            logical_error_prefactor: 0.1,
+        }
+    }
+
+    #[test]
+    fn logical_error_rate_surface_code_d17() {
+        let q = qec(17, 1e-3);
+        // p_L = 0.1 × (0.1)^9 = 1e-10
+        let p_l = q.logical_error_rate();
+        assert!((p_l - 1e-10).abs() < 1e-20, "expected ~1e-10, got {p_l}");
+    }
+
+    #[test]
+    fn logical_error_rate_d7() {
+        let q = qec(7, 1e-3);
+        // p_L = 0.1 × (0.1)^4 = 1e-5
+        let p_l = q.logical_error_rate();
+        assert!((p_l - 1e-5).abs() < 1e-15, "expected ~1e-5, got {p_l}");
+    }
+
+    #[test]
+    fn logical_error_rate_d3() {
+        let q = qec(3, 1e-3);
+        // p_L = 0.1 × (0.1)^2 = 1e-3
+        let p_l = q.logical_error_rate();
+        assert!((p_l - 1e-3).abs() < 1e-13, "expected ~1e-3, got {p_l}");
+    }
+
+    #[test]
+    fn logical_error_rate_monotonic_in_distance() {
+        let p7 = qec(7, 1e-3).logical_error_rate();
+        let p17 = qec(17, 1e-3).logical_error_rate();
+        let p27 = qec(27, 1e-3).logical_error_rate();
+        assert!(p7 > p17, "p_L(d=7)={p7} should exceed p_L(d=17)={p17}");
+        assert!(p17 > p27, "p_L(d=17)={p17} should exceed p_L(d=27)={p27}");
+    }
+
+    #[test]
+    fn logical_error_rate_zero_for_invalid() {
+        let mut q = qec(17, 1e-3);
+        q.physical_error_rate = f64::NAN;
+        assert_eq!(q.logical_error_rate(), 0.0);
+
+        q.physical_error_rate = -1.0;
+        assert_eq!(q.logical_error_rate(), 0.0);
+    }
 }

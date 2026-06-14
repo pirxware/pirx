@@ -31,9 +31,9 @@ impl SobolConfig {
             return Err(SensitivityError::NotPowerOfTwo(self.n_samples));
         }
         if self.n_samples < 64 {
-            return Err(SensitivityError::NotPowerOfTwo(self.n_samples));
+            return Err(SensitivityError::InsufficientSamples(self.n_samples));
         }
-        if !(0.0..1.0).contains(&self.confidence) {
+        if !(self.confidence > 0.0 && self.confidence < 1.0) {
             return Err(SensitivityError::ConfigParse(format!(
                 "confidence must be in (0, 1), got {}",
                 self.confidence
@@ -440,8 +440,8 @@ mod tests {
         };
         let err = config.validate().unwrap_err();
         assert!(
-            matches!(err, SensitivityError::NotPowerOfTwo(32)),
-            "expected NotPowerOfTwo(32), got {err:?}"
+            matches!(err, SensitivityError::InsufficientSamples(32)),
+            "expected InsufficientSamples(32), got {err:?}"
         );
     }
 
@@ -461,7 +461,7 @@ mod tests {
 
     #[test]
     fn config_rejects_bad_confidence() {
-        for &bad in &[-0.1, 1.0, 1.5, f64::NAN] {
+        for &bad in &[0.0, -0.1, 1.0, 1.5, f64::NAN] {
             let config = SobolConfig {
                 n_samples: 1024,
                 confidence: bad,

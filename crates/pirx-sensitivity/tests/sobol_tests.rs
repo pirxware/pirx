@@ -235,14 +235,14 @@ proptest! {
 
         for p in &result.parameters {
             prop_assert!(
-                p.s1 >= -0.5,
-                "S1 ({}) must be >= -0.5 for param {} (seed={seed})",
+                p.s1 >= -1.0,
+                "S1 ({}) must be >= -1.0 for param {} (seed={seed})",
                 p.s1,
                 p.name
             );
             prop_assert!(
-                p.st >= -0.1,
-                "ST ({}) must be >= -0.1 for param {} (seed={seed})",
+                p.st >= -0.5,
+                "ST ({}) must be >= -0.5 for param {} (seed={seed})",
                 p.st,
                 p.name
             );

@@ -3,6 +3,8 @@
 //! Provides Morris and Sobol methods over the hardware parameter space,
 //! leveraging the pirx-core simulation engine for evaluation.
 
+#![forbid(unsafe_code)]
+
 pub mod error;
 pub mod metric;
 pub mod morris;

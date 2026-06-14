@@ -292,3 +292,17 @@ fn map_point_multi_dimensional() {
     assert!((point[0] - 1e-4).abs() < 1e-15);
     assert!((point[1] - 10.0).abs() < f64::EPSILON);
 }
+
+#[test]
+fn validate_negative_min_rejected() {
+    let result = ParameterSpace::new(vec![ParameterDef {
+        name: "physical_error_rate".into(),
+        min: -0.001,
+        max: 0.01,
+        kind: ParameterKind::Continuous,
+    }]);
+    assert!(matches!(
+        result,
+        Err(SensitivityError::NegativeBound { .. })
+    ));
+}

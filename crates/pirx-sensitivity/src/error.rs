@@ -52,6 +52,9 @@ pub enum SensitivityError {
     #[error("Sobol n_samples must be a power of 2, got {0}")]
     NotPowerOfTwo(u32),
 
+    #[error("Sobol n_samples must be >= 64, got {0}")]
+    InsufficientSamples(u32),
+
     #[error("Morris trajectories must be >= 2, got {0}")]
     InsufficientTrajectories(u32),
 

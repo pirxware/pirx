@@ -1,7 +1,5 @@
 //! Morris elementary effects method.
 
-#![allow(dead_code)]
-
 use pirx_hw::model::HardwareModel;
 use pirx_ir::ValidatedCircuit;
 use rand::{Rng as _, SeedableRng};

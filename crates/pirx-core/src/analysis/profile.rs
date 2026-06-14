@@ -122,10 +122,7 @@ mod tests {
     #[test]
     fn cumulative_magic_states_is_prefix_sum() {
         let profile = profile_with_buckets(&[3, 0, 2, 5, 1], 0.001);
-        assert_eq!(
-            profile.cumulative_magic_states(),
-            vec![3, 3, 5, 10, 11],
-        );
+        assert_eq!(profile.cumulative_magic_states(), vec![3, 3, 5, 10, 11],);
     }
 
     #[test]
@@ -148,10 +145,7 @@ mod tests {
     #[test]
     fn cumulative_infidelity_zero_p_logical() {
         let profile = profile_with_buckets(&[3, 1, 2], 0.0);
-        assert_eq!(
-            profile.cumulative_infidelity(),
-            vec![0.0, 0.0, 0.0],
-        );
+        assert_eq!(profile.cumulative_infidelity(), vec![0.0, 0.0, 0.0],);
     }
 
     #[test]
@@ -162,8 +156,6 @@ mod tests {
         let cum = profile.cumulative_magic_states();
         assert_eq!(*cum.last().unwrap(), profile.magic_states_consumed);
         let cum_inf = profile.cumulative_infidelity();
-        assert!(
-            (cum_inf.last().unwrap() - profile.total_infidelity).abs() < f64::EPSILON,
-        );
+        assert!((cum_inf.last().unwrap() - profile.total_infidelity).abs() < f64::EPSILON,);
     }
 }

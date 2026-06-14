@@ -3,6 +3,9 @@
 use super::profile::{BottleneckType, ExecutionProfile, StallRecord};
 use crate::trace::{Trace, TraceEventKind};
 
+const HAD_STALL: u8 = 1;
+const HAD_FAILURE: u8 = 2;
+
 /// Post-hoc trace analyzer. Stateless; every call to [`analyze`] is independent.
 ///
 /// [`analyze`]: ProfileAnalyzer::analyze
@@ -29,8 +32,6 @@ impl ProfileAnalyzer {
         // interval end. Prefix-summed into active counts after the event loop.
         let mut factory_active_deltas = vec![0i64; num_buckets.saturating_add(1)];
         let mut buffer_occupancy = vec![0u32; num_buckets];
-        const HAD_STALL: u8 = 1;
-        const HAD_FAILURE: u8 = 2;
         let mut bucket_flags = vec![0u8; num_buckets];
         let mut stall_events: Vec<StallRecord> = Vec::new();
         let mut injection_errors: u64 = 0;

@@ -79,15 +79,12 @@ impl RoutingModel for RoutingKind {
     }
 }
 
-/// Build routing model from config. Scalar converts `overhead_fraction`
-/// to a fixed cycle count (fraction × 10, rounded up).
+/// Build routing model from config.
 pub(crate) fn from_config(config: &RoutingConfig) -> RoutingKind {
     match config {
-        RoutingConfig::Scalar { overhead_fraction } => {
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let overhead_cycles = (*overhead_fraction * 10.0).ceil() as u32;
-            RoutingKind::Scalar(ScalarRouting { overhead_cycles })
-        }
+        RoutingConfig::Scalar { overhead_cycles } => RoutingKind::Scalar(ScalarRouting {
+            overhead_cycles: *overhead_cycles,
+        }),
         RoutingConfig::Manhattan { cycles_per_hop, .. } => {
             RoutingKind::Manhattan(ManhattanRouting {
                 cycles_per_hop: *cycles_per_hop,
@@ -181,11 +178,8 @@ mod tests {
 
     #[test]
     fn from_config_scalar() {
-        let cfg = RoutingConfig::Scalar {
-            overhead_fraction: 0.5,
-        };
+        let cfg = RoutingConfig::Scalar { overhead_cycles: 5 };
         let model = from_config(&cfg);
-        // 0.5 × 10 = 5.0, ceil = 5
         assert_eq!(model.latency(&[0, 1], &two_qubit_index()), 5);
     }
 

@@ -155,8 +155,8 @@ pub enum RoutingConfig {
     /// Fixed overhead per multi-qubit gate. Ignores topology.
     #[serde(rename = "scalar")]
     Scalar {
-        #[serde(default = "default_overhead_fraction")]
-        overhead_fraction: f64,
+        #[serde(default = "default_overhead_cycles")]
+        overhead_cycles: u32,
     },
     /// Manhattan distance on a logical qubit grid.
     #[serde(rename = "manhattan")]
@@ -168,8 +168,8 @@ pub enum RoutingConfig {
     },
 }
 
-fn default_overhead_fraction() -> f64 {
-    0.5
+fn default_overhead_cycles() -> u32 {
+    5
 }
 
 fn default_cycles_per_hop() -> u32 {
@@ -178,9 +178,7 @@ fn default_cycles_per_hop() -> u32 {
 
 impl Default for RoutingConfig {
     fn default() -> Self {
-        Self::Scalar {
-            overhead_fraction: 0.5,
-        }
+        Self::Scalar { overhead_cycles: 5 }
     }
 }
 

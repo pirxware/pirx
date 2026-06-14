@@ -44,9 +44,6 @@ pub enum HardwareModelError {
     #[error("injection error probability must be in [0, 1], got {0}")]
     InvalidInjectionProbability(f64),
 
-    #[error("routing overhead fraction must be in [0, 1], got {0}")]
-    InvalidOverheadFraction(f64),
-
     #[error("factory count {0} exceeds u16::MAX (65535)")]
     FactoryCountExceedsLimit(u32),
 

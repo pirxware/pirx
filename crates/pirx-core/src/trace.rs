@@ -5,7 +5,36 @@
 
 use serde::{Deserialize, Serialize};
 
-const _: () = assert!(std::mem::size_of::<TraceEvent>() == 32);
+// ── Size budget ──────────────────────────────────────────────────────────────
+//
+// TraceEvent must stay at 32 bytes (cycle: 8 + kind: 24) for two reasons:
+//
+// 1. Memory budget: circuits with 10⁹ T-gates produce ~10¹⁰ events.
+//    At 32 B/event that's 320 GB; at 48 B it's 480 GB — a 50% increase
+//    that can push a run from feasible to OOM.
+//
+// 2. Cache efficiency: 32 B = half a cache line. Two events fit in one
+//    64-byte line during the analyzer's sequential scan. Larger events
+//    reduce scan throughput.
+//
+// The largest variant is currently `FixupInserted { fixup: u64, original: u64 }`
+// at 16 bytes of payload + discriminant + padding = 24 bytes for the enum.
+//
+// If you need to add a variant with a larger payload:
+//   (a) Check if an existing field can be narrowed (e.g., u64 → u32).
+//   (b) Consider boxing the payload: `LargeEvent(Box<LargePayload>)`.
+//       This keeps the enum at 24 bytes (discriminant + pointer) at the
+//       cost of one heap allocation per event of that variant.
+//   (c) If the variant is rare, (b) is almost always the right choice.
+//
+const _: () = assert!(
+    std::mem::size_of::<TraceEvent>() == 32,
+    "TraceEvent size budget exceeded — see comment above for mitigation options"
+);
+const _: () = assert!(
+    std::mem::size_of::<TraceEventKind>() == 24,
+    "TraceEventKind size budget exceeded — see comment above for mitigation options"
+);
 
 /// Bit flag for synthetic (fixup) operation IDs in trace events.
 ///

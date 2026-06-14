@@ -3,6 +3,7 @@
 //! Provides Morris and Sobol methods over the hardware parameter space,
 //! leveraging the pirx-core simulation engine for evaluation.
 
+pub mod config;
 pub mod error;
 pub mod metric;
 pub mod morris;
@@ -11,6 +12,11 @@ pub mod parameter;
 pub mod sample;
 pub mod sobol;
 
+pub use config::{
+    MorrisConfig, SensitivityConfig, SobolConfig, SweepConfig, parse_sensitivity_config,
+};
 pub use error::SensitivityError;
+pub use metric::OutputMetric;
 pub use mutate::{mutate_hw, mutate_hw_multi};
 pub use parameter::{KNOWN_PARAMS, ParameterDef, ParameterKind, ParameterSpace};
+pub use sample::{EvalConfig, evaluate_point};

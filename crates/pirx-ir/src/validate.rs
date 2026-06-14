@@ -78,6 +78,7 @@ pub enum ValidationError {
 /// - Hook activation targets reference existing, inactive operations
 /// - No orphaned inactive ops (every inactive op reachable from a hook)
 /// - Dependency graph is acyclic (topological sort via Kahn's algorithm)
+#[must_use = "validated circuit is discarded if not captured"]
 pub fn validate(circuit: ProfilerCircuit) -> Result<ValidatedCircuit, ValidationError> {
     if circuit.ops.is_empty() {
         return Err(ValidationError::EmptyCircuit);

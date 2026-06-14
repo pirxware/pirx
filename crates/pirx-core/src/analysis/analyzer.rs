@@ -28,9 +28,10 @@ impl ProfileAnalyzer {
         // Difference array: deltas[b] += 1 at interval start, deltas[b+1] -= 1 at
         // interval end. Prefix-summed into active counts after the event loop.
         let mut factory_active_deltas = vec![0i64; num_buckets.saturating_add(1)];
-        let mut factory_failure_counts = vec![0u32; num_buckets];
         let mut buffer_occupancy = vec![0u32; num_buckets];
-        let mut stalls_in_bucket = vec![0u32; num_buckets];
+        const HAD_STALL: u8 = 1;
+        const HAD_FAILURE: u8 = 2;
+        let mut bucket_flags = vec![0u8; num_buckets];
         let mut stall_events: Vec<StallRecord> = Vec::new();
         let mut injection_errors: u64 = 0;
         let mut fixups_inserted: u64 = 0;
@@ -90,8 +91,8 @@ impl ProfileAnalyzer {
                             *d -= 1;
                         }
                     }
-                    if let Some(c) = factory_failure_counts.get_mut(b) {
-                        *c = c.saturating_add(1);
+                    if let Some(f) = bucket_flags.get_mut(b) {
+                        *f |= HAD_FAILURE;
                     }
                 }
 
@@ -103,18 +104,18 @@ impl ProfileAnalyzer {
                 }
 
                 TraceEventKind::GateServed { gate, wait } => {
+                    if let Some(count) = magic_states_per_bucket.get_mut(b) {
+                        *count = count.saturating_add(1);
+                    }
                     if *wait > 0 {
                         stall_events.push(StallRecord {
                             cycle: event.cycle,
                             gate_id: *gate,
                             wait_cycles: u64::from(*wait),
                         });
-                        if let Some(c) = stalls_in_bucket.get_mut(b) {
-                            *c = c.saturating_add(1);
+                        if let Some(f) = bucket_flags.get_mut(b) {
+                            *f |= HAD_STALL;
                         }
-                    }
-                    if let Some(count) = magic_states_per_bucket.get_mut(b) {
-                        *count = count.saturating_add(1);
                     }
                 }
 
@@ -173,14 +174,13 @@ impl ProfileAnalyzer {
             })
             .collect();
 
-        // Classify bottleneck per bucket from stall counts and factory failure counts.
-        let bottleneck_type: Vec<BottleneckType> = stalls_in_bucket
+        // Classify bottleneck per bucket from the per-bucket flag bits.
+        let bottleneck_type: Vec<BottleneckType> = bucket_flags
             .iter()
-            .zip(factory_failure_counts.iter())
-            .map(|(&stalls, &failures)| {
-                if stalls > 0 && failures > 0 {
+            .map(|&f| {
+                if f & HAD_STALL != 0 && f & HAD_FAILURE != 0 {
                     BottleneckType::Balanced
-                } else if stalls > 0 {
+                } else if f & HAD_STALL != 0 {
                     BottleneckType::FactoryThroughput
                 } else {
                     BottleneckType::None

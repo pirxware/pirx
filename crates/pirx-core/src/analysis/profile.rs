@@ -94,3 +94,76 @@ impl ExecutionProfile {
             .collect()
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    fn profile_with_buckets(buckets: &[u64], p_logical: f64) -> ExecutionProfile {
+        let num = buckets.len();
+        ExecutionProfile {
+            resolution: 10,
+            total_cycles: (num as u64) * 10,
+            factory_utilization: vec![0.0; num],
+            buffer_occupancy: vec![0; num],
+            bottleneck_type: vec![BottleneckType::None; num],
+            stall_events: Vec::new(),
+            injection_errors: 0,
+            fixups_inserted: 0,
+            critical_path_extension: 0,
+            p_logical,
+            magic_states_consumed: buckets.iter().sum(),
+            total_infidelity: buckets.iter().sum::<u64>() as f64 * p_logical,
+            magic_states_per_bucket: buckets.to_vec(),
+        }
+    }
+
+    #[test]
+    fn cumulative_magic_states_is_prefix_sum() {
+        let profile = profile_with_buckets(&[3, 0, 2, 5, 1], 0.001);
+        assert_eq!(
+            profile.cumulative_magic_states(),
+            vec![3, 3, 5, 10, 11],
+        );
+    }
+
+    #[test]
+    fn cumulative_magic_states_empty() {
+        let profile = profile_with_buckets(&[], 0.001);
+        assert!(profile.cumulative_magic_states().is_empty());
+    }
+
+    #[test]
+    fn cumulative_infidelity_equals_prefix_sum_times_p_logical() {
+        let p = 0.002;
+        let profile = profile_with_buckets(&[3, 0, 2, 5, 1], p);
+        let expected: Vec<f64> = [3, 3, 5, 10, 11]
+            .iter()
+            .map(|&c| f64::from(c) * p)
+            .collect();
+        assert_eq!(profile.cumulative_infidelity(), expected);
+    }
+
+    #[test]
+    fn cumulative_infidelity_zero_p_logical() {
+        let profile = profile_with_buckets(&[3, 1, 2], 0.0);
+        assert_eq!(
+            profile.cumulative_infidelity(),
+            vec![0.0, 0.0, 0.0],
+        );
+    }
+
+    #[test]
+    fn cumulative_last_equals_total() {
+        let buckets = &[4, 2, 7, 1];
+        let p = 0.005;
+        let profile = profile_with_buckets(buckets, p);
+        let cum = profile.cumulative_magic_states();
+        assert_eq!(*cum.last().unwrap(), profile.magic_states_consumed);
+        let cum_inf = profile.cumulative_infidelity();
+        assert!(
+            (cum_inf.last().unwrap() - profile.total_infidelity).abs() < f64::EPSILON,
+        );
+    }
+}

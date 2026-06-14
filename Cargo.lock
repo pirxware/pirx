@@ -843,6 +843,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "pirx-sensitivity"
+version = "0.1.0"
+dependencies = [
+ "pirx-core",
+ "pirx-hw",
+ "pirx-ir",
+ "pirx-testkit",
+ "proptest",
+ "rand",
+ "rand_chacha",
+ "rayon",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "toml",
+]
+
+[[package]]
 name = "pirx-testkit"
 version = "0.1.0"
 dependencies = [

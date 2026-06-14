@@ -20,6 +20,6 @@ pub use analysis::{BottleneckType, ExecutionProfile, ProfileAnalyzer, StallRecor
 pub use engine::{Engine, EngineConfig, EngineError};
 pub use monte_carlo::{
     Distribution, MonteCarloConfig, MonteCarloError, MonteCarloResult, ReplicaSummary,
-    run_monte_carlo,
+    run_monte_carlo, trace_summary,
 };
 pub use trace::{SYNTHETIC_ID_FLAG, Trace, TraceEvent, TraceEventKind};

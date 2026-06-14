@@ -229,8 +229,14 @@ fn collect_summaries(
 
 // ── Summary extraction ───────────────────────────────────────────────────────
 
+/// Extract a lightweight summary from a completed trace.
+///
 /// Single O(n) pass over trace events to extract scalar statistics.
 /// No per-bucket vectors — only running counters.
+pub fn trace_summary(trace: &Trace, seed: u64, factory_count: u16) -> ReplicaSummary {
+    extract_summary(trace, seed, factory_count)
+}
+
 fn extract_summary(trace: &Trace, seed: u64, factory_count: u16) -> ReplicaSummary {
     let mut stall_count: u64 = 0;
     let mut total_stall_cycles: u64 = 0;

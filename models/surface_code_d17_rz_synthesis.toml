@@ -23,7 +23,7 @@ fixup_cost_cycles = 1
 
 [routing]
 model = "scalar"
-overhead_fraction = 0.5
+overhead_cycles = 5
 
 [buffer]
 capacity = 8

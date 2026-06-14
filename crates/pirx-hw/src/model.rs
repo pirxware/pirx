@@ -108,12 +108,7 @@ impl HardwareModel {
 
         // Routing
         match &self.routing {
-            RoutingConfig::Scalar { overhead_fraction } => {
-                let of = *overhead_fraction;
-                if !(0.0..=1.0).contains(&of) || of.is_nan() {
-                    return Err(HardwareModelError::InvalidOverheadFraction(of));
-                }
-            }
+            RoutingConfig::Scalar { .. } => {}
             RoutingConfig::Manhattan {
                 grid_width,
                 grid_height,
@@ -150,6 +145,7 @@ impl HardwareModel {
 /// Returns an error if the TOML is malformed, missing required fields,
 /// or violates domain invariants (e.g. even code distance, out-of-range
 /// probabilities, non-positive rates).
+#[must_use = "hardware model is discarded if not captured"]
 pub fn load(toml_str: &str) -> Result<HardwareModel, HardwareModelError> {
     let hw: HardwareModel = toml::from_str(toml_str)?;
     hw.validate()?;
@@ -233,10 +229,10 @@ capacity = 4
         assert!((hw.injection.error_probability - 0.5).abs() < f64::EPSILON);
         assert_eq!(hw.injection.fixup_cost_cycles, 1);
         match hw.routing {
-            RoutingConfig::Scalar { overhead_fraction } => {
-                assert!(
-                    (overhead_fraction - 0.5).abs() < f64::EPSILON,
-                    "scalar overhead_fraction should default to 0.5"
+            RoutingConfig::Scalar { overhead_cycles } => {
+                assert_eq!(
+                    overhead_cycles, 5,
+                    "scalar overhead_cycles should default to 5"
                 );
             }
             _ => panic!("expected Scalar routing"),
@@ -268,7 +264,7 @@ fixup_cost_cycles = 1
 
 [routing]
 model = "scalar"
-overhead_fraction = 0.5
+overhead_cycles = 5
 
 [buffer]
 capacity = 4
@@ -359,13 +355,10 @@ capacity = 4
     }
 
     #[test]
-    fn rejects_overhead_fraction_above_one() {
-        let toml = valid_toml(cultivation_factory())
-            .replace("overhead_fraction = 0.5", "overhead_fraction = 2.0");
-        assert!(matches!(
-            load(&toml),
-            Err(HardwareModelError::InvalidOverheadFraction(_))
-        ));
+    fn scalar_overhead_cycles_zero_is_valid() {
+        let toml =
+            valid_toml(cultivation_factory()).replace("overhead_cycles = 5", "overhead_cycles = 0");
+        assert!(load(&toml).is_ok());
     }
 
     #[test]

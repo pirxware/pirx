@@ -257,6 +257,7 @@ impl Engine {
     /// Consumes the engine — an engine cannot be run twice.
     /// If `max_cycles` is set and the limit is reached before all ops complete,
     /// the returned trace has `truncated: true`.
+    #[must_use = "simulation trace is discarded if not captured"]
     pub fn run(mut self) -> Trace {
         while !self.is_complete() {
             if let Some(max) = self.max_cycles {

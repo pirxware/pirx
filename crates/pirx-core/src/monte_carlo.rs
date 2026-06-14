@@ -137,6 +137,7 @@ pub struct MonteCarloResult {
 ///
 /// Each replica gets seed `config.base_seed.wrapping_add(i)`. Replicas
 /// are run in parallel via rayon on non-WASM targets.
+#[must_use = "Monte Carlo result is discarded if not captured"]
 pub fn run_monte_carlo(
     circuit: &ValidatedCircuit,
     hw: &HardwareModel,

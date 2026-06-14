@@ -4,7 +4,7 @@ use super::profile::{BottleneckType, ExecutionProfile, StallRecord};
 use crate::trace::{Trace, TraceEventKind};
 
 const HAD_STALL: u8 = 1;
-const HAD_FAILURE: u8 = 2;
+const HAD_ROUTING: u8 = 4;
 
 /// Post-hoc trace analyzer. Stateless; every call to [`analyze`] is independent.
 ///
@@ -19,6 +19,7 @@ impl ProfileAnalyzer {
     ///
     /// Makes a single O(n) pass over `trace.events`. All output vectors are
     /// pre-allocated before the scan loop — zero allocations inside the loop.
+    #[must_use = "execution profile is discarded if not captured"]
     pub fn analyze(trace: &Trace, factory_count: u16, resolution: u64) -> ExecutionProfile {
         let resolution = resolution.max(1);
         let total_cycles = trace.total_cycles;
@@ -40,7 +41,9 @@ impl ProfileAnalyzer {
         let mut magic_states_per_bucket = vec![0u64; num_buckets];
 
         // Per-factory start cycle for active-interval tracking.
-        // Dense Vec indexed by factory_id — u16 keyspace, no hash overhead.
+        // Lifecycle: set by FactoryStarted, consumed (and cleared) by FactoryProduced/Failed.
+        // After the event loop, any remaining Some(cycle) represents an in-progress
+        // factory run that didn't complete before simulation ended.
         let mut factory_starts: Vec<Option<u64>> = vec![None; usize::from(factory_count)];
         // Per-fixup insert cycle for critical-path extension accounting.
         let mut fixup_starts: std::collections::HashMap<u64, u64> =
@@ -76,6 +79,9 @@ impl ProfileAnalyzer {
                             *d -= 1;
                         }
                     }
+                    if let Some(slot) = factory_starts.get_mut(usize::from(*factory_id)) {
+                        *slot = None;
+                    }
                 }
 
                 TraceEventKind::FactoryFailed { factory_id } => {
@@ -92,8 +98,8 @@ impl ProfileAnalyzer {
                             *d -= 1;
                         }
                     }
-                    if let Some(f) = bucket_flags.get_mut(b) {
-                        *f |= HAD_FAILURE;
+                    if let Some(slot) = factory_starts.get_mut(usize::from(*factory_id)) {
+                        *slot = None;
                     }
                 }
 
@@ -136,13 +142,20 @@ impl ProfileAnalyzer {
                     }
                 }
 
+                TraceEventKind::RoutingCompleted { latency, .. } => {
+                    if *latency > 0
+                        && let Some(f) = bucket_flags.get_mut(b)
+                    {
+                        *f |= HAD_ROUTING;
+                    }
+                }
+
                 TraceEventKind::GateReady { .. }
                 | TraceEventKind::GateScheduled { .. }
                 | TraceEventKind::GateStalled { .. }
                 | TraceEventKind::GateCompleted { .. }
                 | TraceEventKind::BufferFull
                 | TraceEventKind::RoutingStarted { .. }
-                | TraceEventKind::RoutingCompleted { .. }
                 | TraceEventKind::MeasurementOutcome { .. }
                 | TraceEventKind::OpsActivated { .. } => {}
             }
@@ -179,12 +192,13 @@ impl ProfileAnalyzer {
         let bottleneck_type: Vec<BottleneckType> = bucket_flags
             .iter()
             .map(|&f| {
-                if f & HAD_STALL != 0 && f & HAD_FAILURE != 0 {
-                    BottleneckType::Balanced
-                } else if f & HAD_STALL != 0 {
-                    BottleneckType::FactoryThroughput
-                } else {
-                    BottleneckType::None
+                let has_stall = f & HAD_STALL != 0;
+                let has_routing = f & HAD_ROUTING != 0;
+                match (has_stall, has_routing) {
+                    (true, true) => BottleneckType::Balanced,
+                    (true, false) => BottleneckType::FactoryThroughput,
+                    (false, true) => BottleneckType::RoutingContention,
+                    (false, false) => BottleneckType::None,
                 }
             })
             .collect();
@@ -223,7 +237,7 @@ impl ProfileAnalyzer {
 )]
 mod tests {
     use pirx_hw::model::HardwareModel;
-    use pirx_testkit::{cultivation_hw, single_clifford, t_gate_chain, validated};
+    use pirx_testkit::{cultivation_hw, single_clifford, t_gate_chain, two_qubit_grid, validated};
 
     use super::{BottleneckType, ProfileAnalyzer};
     use crate::{
@@ -422,6 +436,74 @@ mod tests {
     }
 
     #[test]
+    fn routing_contention_detected() {
+        let circuit = validated(two_qubit_grid(4));
+        let hw = pirx_testkit::manhattan_hw(10, 10);
+        let trace = Engine::new(
+            &circuit,
+            &hw,
+            EngineConfig {
+                seed: 0,
+                max_cycles: None,
+            },
+        )
+        .unwrap()
+        .run();
+
+        let has_routing_event = trace.events.iter().any(
+            |e| matches!(e.kind, TraceEventKind::RoutingCompleted { latency, .. } if latency > 0),
+        );
+        assert!(
+            has_routing_event,
+            "trace must contain at least one RoutingCompleted with latency > 0"
+        );
+
+        let profile = ProfileAnalyzer::analyze(&trace, 1, 1);
+        let has_routing_bottleneck = profile
+            .bottleneck_type
+            .iter()
+            .any(|&bt| bt == BottleneckType::RoutingContention || bt == BottleneckType::Balanced);
+        assert!(
+            has_routing_bottleneck,
+            "at least one bucket should have RoutingContention or Balanced"
+        );
+    }
+
+    #[test]
+    fn balanced_when_stall_and_routing() {
+        use crate::trace::{Trace, TraceEvent};
+
+        let trace = Trace {
+            schema_version: "1.1".into(),
+            events: vec![
+                TraceEvent {
+                    cycle: 1,
+                    kind: TraceEventKind::GateServed { gate: 0, wait: 5 },
+                },
+                TraceEvent {
+                    cycle: 2,
+                    kind: TraceEventKind::RoutingCompleted {
+                        gate: 1,
+                        latency: 3,
+                    },
+                },
+            ],
+            seed: 0,
+            total_cycles: 10,
+            truncated: false,
+            p_logical: 0.0,
+            magic_states_consumed: 1,
+        };
+
+        let profile = ProfileAnalyzer::analyze(&trace, 1, 100);
+        assert_eq!(
+            profile.bottleneck_type[0],
+            BottleneckType::Balanced,
+            "bucket with both stall and routing latency should be Balanced"
+        );
+    }
+
+    #[test]
     fn difference_array_matches_naive_reference() {
         let circuit = validated(t_gate_chain(5));
         let hw = cultivation_cold(2);
@@ -459,6 +541,7 @@ mod tests {
                             *slot += 1;
                         }
                     }
+                    starts.remove(factory_id);
                 }
                 _ => {}
             }

@@ -5,11 +5,13 @@ use serde::{Deserialize, Serialize};
 /// Per-bucket classification of the dominant execution bottleneck.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BottleneckType {
-    /// No contention: magic state supply meets demand.
+    /// No contention: magic state supply meets demand, routing is fast.
     None,
     /// T-gates are waiting for magic states (buffer empty with pending demand).
     FactoryThroughput,
-    /// Both factory failures and gate stalls occurred in the same bucket.
+    /// Operations incurring significant routing latency in this bucket.
+    RoutingContention,
+    /// Both factory throughput and routing contention present in this bucket.
     Balanced,
 }
 

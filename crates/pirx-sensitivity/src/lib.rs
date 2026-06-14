@@ -12,4 +12,5 @@ pub mod sample;
 pub mod sobol;
 
 pub use error::SensitivityError;
+pub use mutate::{mutate_hw, mutate_hw_multi};
 pub use parameter::{KNOWN_PARAMS, ParameterDef, ParameterKind, ParameterSpace};

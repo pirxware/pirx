@@ -8,6 +8,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+#### pirx-sensitivity
+- Morris elementary effects screening — trajectory generation, elementary effect extraction, and aggregation (μ, μ*, σ) with parallel evaluation via Rayon
+- Sobol variance-based sensitivity analysis — Saltelli sample matrix construction, Jansen first-order and total-order estimators, bootstrap confidence intervals
+- Sobol quasi-random sequence generator for low-discrepancy sampling; automatic LHS row-split fallback for high-dimensional parameter spaces (>21 dimensions)
+- Parameter space definition with unit-to-physical mapping — supports integer, continuous, and discrete parameter kinds
+- Hardware model mutation from parameter space — point-wise and multi-parameter mutation of `HardwareModel` fields
+- Output metrics extracted from engine trace summaries (`total_cycles`, `stall_fraction`, `factory_utilization`, `injection_error_rate`, `critical_path_extension`)
+- TOML sweep configuration parsing (`[sweep]`, `[sweep.morris]`, `[sweep.sobol]`, `[[parameters]]`)
+- `evaluate_point` function: mutate hardware model → run engine (with optional Monte Carlo averaging) → extract metric
+- Ishigami analytical validation for Sobol estimator correctness
+
+#### pirx-cli
+- `sensitivity morris` subcommand — runs Morris screening from circuit + hardware model + sweep config, outputs JSON result with summary table
+- `sensitivity sobol` subcommand — runs Sobol analysis from circuit + hardware model + sweep config, outputs JSON result with first-order/total-order indices and confidence intervals
+
+#### pirx-core
+- `trace_summary` exposed as public API for use by sensitivity analysis
+
 #### pirx-ir
 - Profiler IR circuit representation — operations, dependencies, qubit assignments, circuit metadata
 - IR validation (Kahn's acyclicity check, duplicate op IDs, dangling dependencies, qubit range checks) returning `ValidatedCircuit` proof token

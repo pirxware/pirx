@@ -288,9 +288,52 @@ fn map_point_multi_dimensional() {
     ])
     .expect("valid space");
 
-    let point = space.map_point(&[0.0, 1.0]);
+    let point = space.map_point(&[0.0, 1.0]).expect("valid point");
     assert!((point[0] - 1e-4).abs() < 1e-15);
     assert!((point[1] - 10.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn map_point_dimension_mismatch() {
+    let space = ParameterSpace::new(vec![
+        ParameterDef {
+            name: "physical_error_rate".into(),
+            min: 1e-4,
+            max: 1e-2,
+            kind: ParameterKind::Continuous,
+        },
+        ParameterDef {
+            name: "buffer_capacity".into(),
+            min: 2.0,
+            max: 10.0,
+            kind: ParameterKind::Integer,
+        },
+    ])
+    .expect("valid space");
+
+    let too_short = space.map_point(&[0.5]);
+    assert!(
+        matches!(
+            too_short,
+            Err(SensitivityError::DimensionMismatch {
+                expected: 2,
+                actual: 1
+            })
+        ),
+        "short input should fail: {too_short:?}"
+    );
+
+    let too_long = space.map_point(&[0.5, 0.5, 0.5]);
+    assert!(
+        matches!(
+            too_long,
+            Err(SensitivityError::DimensionMismatch {
+                expected: 2,
+                actual: 3
+            })
+        ),
+        "long input should fail: {too_long:?}"
+    );
 }
 
 #[test]

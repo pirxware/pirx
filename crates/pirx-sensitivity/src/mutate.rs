@@ -157,3 +157,24 @@ pub fn mutate_hw_multi(
         .map_err(SensitivityError::HardwareValidation)?;
     Ok(hw)
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use crate::parameter::KNOWN_PARAMS;
+
+    #[test]
+    fn apply_single_handles_all_known_params() {
+        let hw = pirx_testkit::cultivation_hw();
+        for &name in KNOWN_PARAMS {
+            let mut hw_copy = hw.clone();
+            let result = apply_single(&mut hw_copy, name, 1.0);
+            assert!(
+                !matches!(result, Err(SensitivityError::UnknownParameter(_))),
+                "KNOWN_PARAMS entry '{name}' not handled by apply_single — \
+                 got UnknownParameter instead of Ok or type mismatch"
+            );
+        }
+    }
+}

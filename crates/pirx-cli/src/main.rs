@@ -80,6 +80,22 @@ enum SensitivityCommand {
         #[arg(long, default_value = "morris_result.json")]
         output: PathBuf,
     },
+
+    /// Run Sobol variance-based sensitivity analysis.
+    Sobol {
+        /// Path to the circuit JSON file (.pirx.json).
+        #[arg(long)]
+        circuit: PathBuf,
+        /// Path to the hardware model TOML file.
+        #[arg(long)]
+        model: PathBuf,
+        /// Path to the sensitivity sweep TOML configuration.
+        #[arg(long)]
+        sweep: PathBuf,
+        /// Output path for the JSON Sobol result.
+        #[arg(long, default_value = "sobol_result.json")]
+        output: PathBuf,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -100,6 +116,8 @@ enum CliError {
     Sensitivity(#[from] pirx_sensitivity::SensitivityError),
     #[error("sweep config does not contain a [sweep.morris] section")]
     MissingMorrisConfig,
+    #[error("sweep config does not contain a [sweep.sobol] section")]
+    MissingSobolConfig,
 }
 
 impl CliError {
@@ -112,7 +130,8 @@ impl CliError {
             | Self::Engine(_)
             | Self::MonteCarlo(_)
             | Self::Sensitivity(_)
-            | Self::MissingMorrisConfig => 1,
+            | Self::MissingMorrisConfig
+            | Self::MissingSobolConfig => 1,
         }
     }
 }
@@ -289,6 +308,167 @@ fn run_morris_cmd(
     Ok(())
 }
 
+fn run_sobol_cmd(
+    circuit: &Path,
+    model: &Path,
+    sweep: &Path,
+    output: &Path,
+) -> Result<(), CliError> {
+    let circuit_json = std::fs::read_to_string(circuit)?;
+    let profiler_circuit: pirx_ir::circuit::ProfilerCircuit = serde_json::from_str(&circuit_json)?;
+    let validated = pirx_ir::validate::validate(profiler_circuit)?;
+
+    let hw_toml = std::fs::read_to_string(model)?;
+    let hw_model = pirx_hw::model::load(&hw_toml)?;
+
+    let sweep_toml = std::fs::read_to_string(sweep)?;
+    let config = pirx_sensitivity::parse_sensitivity_config(&sweep_toml)?;
+
+    let sobol_config = config.sweep.sobol.ok_or(CliError::MissingSobolConfig)?;
+    let eval_config = pirx_sensitivity::EvalConfig {
+        mc_replicas: config.sweep.mc_replicas,
+        base_seed: config.sweep.base_seed,
+        max_cycles: config.sweep.max_cycles,
+        metric: config.sweep.metric,
+    };
+    let space = pirx_sensitivity::ParameterSpace::new(config.parameters)?;
+    space.validate(&hw_model)?;
+
+    let start = std::time::Instant::now();
+    let result = pirx_sensitivity::sobol_analysis(
+        &validated,
+        &hw_model,
+        &space,
+        &eval_config,
+        sobol_config,
+    )?;
+    let elapsed = start.elapsed();
+
+    let json = serde_json::to_string_pretty(&result)?;
+    std::fs::write(output, &json)?;
+
+    print_sobol_summary(&result, &eval_config, elapsed, output);
+
+    Ok(())
+}
+
+fn interaction_label(s1: f64, st: f64) -> &'static str {
+    let gap = (st - s1).abs();
+    if gap < 0.05 {
+        if s1 < 0.03 {
+            "\u{2248}yes (negligible)"
+        } else {
+            "\u{2248}yes (additive)"
+        }
+    } else {
+        "no (interaction)"
+    }
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn print_sobol_summary(
+    result: &pirx_sensitivity::SobolResult,
+    eval_config: &pirx_sensitivity::EvalConfig,
+    elapsed: std::time::Duration,
+    output: &Path,
+) {
+    let dim = result.parameters.len();
+    let n = result.evaluations / (dim as u64 + 2);
+
+    let metric_name = serde_json::to_string(&eval_config.metric)
+        .unwrap_or_else(|_| String::from("\"unknown\""))
+        .trim_matches('"')
+        .to_owned();
+
+    let confidence_pct = result.config.confidence * 100.0;
+
+    eprintln!(
+        "Sobol Analysis: N={}, P={}, evaluations={}, MC replicas={}",
+        n, dim, result.evaluations, eval_config.mc_replicas,
+    );
+    eprintln!(
+        "Metric: {} | Var(Y) = {:.2e}",
+        metric_name, result.output_variance,
+    );
+    eprintln!();
+
+    let ranked = result.rankings();
+
+    let name_width = ranked
+        .iter()
+        .map(|p| p.name.len())
+        .max()
+        .unwrap_or(9)
+        .max(9);
+
+    eprintln!(
+        "{:<name_w$} {:>21} {:>21}   S\u{2081}\u{2248}S\u{209c}?",
+        "Parameter",
+        format!("S\u{2081} [{confidence_pct:.0}% CI]"),
+        format!("S\u{209c} [{confidence_pct:.0}% CI]"),
+        name_w = name_width,
+    );
+    eprintln!("{}", "\u{2500}".repeat(name_width + 21 + 21 + 3 + 20));
+
+    for p in &ranked {
+        let label = interaction_label(p.s1, p.st);
+        eprintln!(
+            "{:<name_w$} {:>5.3} [{:.2}, {:.2}]   {:>5.3} [{:.2}, {:.2}]   {}",
+            p.name,
+            p.s1,
+            p.s1_ci.0,
+            p.s1_ci.1,
+            p.st,
+            p.st_ci.0,
+            p.st_ci.1,
+            label,
+            name_w = name_width,
+        );
+    }
+
+    eprintln!();
+    eprintln!(
+        "\u{03a3} S\u{2081} = {:.3} ({})",
+        result.s1_sum,
+        if (result.s1_sum - 1.0).abs() < 0.1 {
+            "close to 1.0 \u{2014} model is approximately additive"
+        } else {
+            "far from 1.0 \u{2014} significant interactions present"
+        },
+    );
+
+    let mut top_interaction: Option<(&str, f64)> = None;
+    for p in &result.parameters {
+        let gap = p.st - p.s1;
+        if gap > top_interaction.map_or(0.0, |(_, g)| g) {
+            top_interaction = Some((&p.name, gap));
+        }
+    }
+    if let Some((name, gap)) = top_interaction
+        && gap >= 0.05
+    {
+        eprintln!(
+            "Top interaction contributor: {} (S\u{209c}\u{2212}S\u{2081} gap: {:.3})",
+            name, gap,
+        );
+    }
+
+    eprintln!();
+
+    let evals_per_sec = if elapsed.as_secs_f64() > 0.0 {
+        result.evaluations as f64 / elapsed.as_secs_f64()
+    } else {
+        0.0
+    };
+
+    eprintln!(
+        "Wall time: {:.1}s ({:.1} evals/s)",
+        elapsed.as_secs_f64(),
+        evals_per_sec,
+    );
+    eprintln!("\u{2192} {}", output.display());
+}
+
 fn sensitivity_bar(mu_star: f64, max_mu_star: f64) -> String {
     if max_mu_star <= 0.0 || mu_star <= 0.0 {
         return String::from("\u{258f}");
@@ -431,6 +611,12 @@ fn main() {
                 sweep,
                 output,
             } => run_morris_cmd(&circuit, &model, &sweep, &output),
+            SensitivityCommand::Sobol {
+                circuit,
+                model,
+                sweep,
+                output,
+            } => run_sobol_cmd(&circuit, &model, &sweep, &output),
         },
     };
     if let Err(e) = result {

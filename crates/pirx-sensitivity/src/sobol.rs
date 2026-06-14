@@ -1,10 +1,8 @@
 //! Sobol variance-based sensitivity indices.
 
-#![allow(dead_code)]
-
 use pirx_hw::model::HardwareModel;
 use pirx_ir::ValidatedCircuit;
-use rand::Rng as _;
+use rand::{Rng as _, SeedableRng as _};
 use rand_chacha::ChaCha12Rng;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -296,6 +294,64 @@ pub struct SobolParameterResult {
     pub st_ci: (f64, f64),
     /// Interaction effect: Sₜ - S₁.
     pub interaction: f64,
+}
+
+/// Run a complete Sobol variance-based sensitivity analysis.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::indexing_slicing
+)]
+pub fn sobol_analysis(
+    circuit: &ValidatedCircuit,
+    base_hw: &HardwareModel,
+    space: &ParameterSpace,
+    eval_config: &EvalConfig,
+    config: SobolConfig,
+) -> Result<SobolResult, SensitivityError> {
+    config.validate()?;
+    if space.dim() == 0 {
+        return Err(SensitivityError::EmptyParameterSpace);
+    }
+
+    let n = config.n_samples as usize;
+    let dim = space.dim();
+
+    let (a, b, ab) = build_saltelli_matrices(n, dim)?;
+    let (f_a, f_b, f_ab) = evaluate_all(&a, &b, &ab, circuit, base_hw, space, eval_config)?;
+    let indices = compute_indices(&f_a, &f_b, &f_ab, dim);
+
+    let mut bootstrap_rng = ChaCha12Rng::seed_from_u64(
+        eval_config
+            .base_seed
+            .wrapping_mul(0x9E3779B97F4A7C15)
+            .wrapping_add(1),
+    );
+    let cis = bootstrap_ci(&f_a, &f_b, &f_ab, dim, &config, &mut bootstrap_rng);
+
+    let output_variance = compute_variance(&f_a, &f_b);
+    let parameters: Vec<SobolParameterResult> = (0..dim)
+        .map(|i| {
+            let (s1, st) = indices[i];
+            let (s1_ci, st_ci) = cis[i];
+            SobolParameterResult {
+                name: space.params()[i].name.clone(),
+                s1,
+                st,
+                s1_ci,
+                st_ci,
+                interaction: st - s1,
+            }
+        })
+        .collect();
+
+    Ok(SobolResult {
+        s1_sum: parameters.iter().map(|p| p.s1).sum(),
+        parameters,
+        output_variance,
+        evaluations: n as u64 * (dim as u64 + 2),
+        config,
+    })
 }
 
 #[cfg(test)]

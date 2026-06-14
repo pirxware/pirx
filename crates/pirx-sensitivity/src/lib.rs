@@ -21,3 +21,4 @@ pub use morris::{MorrisParameterResult, MorrisResult, morris_screening};
 pub use mutate::{mutate_hw, mutate_hw_multi};
 pub use parameter::{ParameterDef, ParameterKind, ParameterSpace};
 pub use sample::{EvalConfig, evaluate_point};
+pub use sobol::{SobolParameterResult, SobolResult};

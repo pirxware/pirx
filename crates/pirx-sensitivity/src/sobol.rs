@@ -5,6 +5,7 @@
 use pirx_hw::model::HardwareModel;
 use pirx_ir::ValidatedCircuit;
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     config::SobolConfig,
@@ -50,17 +51,20 @@ impl SobolConfig {
 
 /// Construct A, B, and AB_i matrices for Saltelli's method.
 ///
-/// 1. Generate 2N quasi-random points via Sobol sequence
-/// 2. Split: A = first N rows, B = last N rows
+/// 1. Generate N quasi-random points in 2P dimensions
+/// 2. Column-split: A = first P columns, B = last P columns
 /// 3. For each param i: AB_i = copy of A with column i from B
+///
+/// Column-split gives independent A and B matrices because Sobol
+/// sequences have low correlation across dimensions.
 #[allow(clippy::indexing_slicing)]
 pub(crate) fn build_saltelli_matrices(
     n: usize,
     dim: usize,
 ) -> Result<SaltelliMatrices, SensitivityError> {
-    let raw = sobol_sequence(2 * n, dim)?;
-    let a: Vec<Vec<f64>> = raw[..n].to_vec();
-    let b: Vec<Vec<f64>> = raw[n..].to_vec();
+    let raw = sobol_sequence(n, 2 * dim)?;
+    let a: Vec<Vec<f64>> = raw.iter().map(|row| row[..dim].to_vec()).collect();
+    let b: Vec<Vec<f64>> = raw.iter().map(|row| row[dim..].to_vec()).collect();
     let ab: Vec<Vec<Vec<f64>>> = (0..dim)
         .map(|i| {
             (0..n)
@@ -120,6 +124,107 @@ pub(crate) fn evaluate_all(
         })
         .collect();
     Ok((f_a, f_b, f_ab))
+}
+
+/// Compute Var(f_A ∪ f_B) without allocating a merged vector.
+#[allow(clippy::cast_precision_loss)]
+pub(crate) fn compute_variance(f_a: &[f64], f_b: &[f64]) -> f64 {
+    let n_total = (f_a.len() + f_b.len()) as f64;
+    let sum: f64 = f_a.iter().chain(f_b.iter()).sum();
+    let mean = sum / n_total;
+    f_a.iter()
+        .chain(f_b.iter())
+        .map(|&v| (v - mean).powi(2))
+        .sum::<f64>()
+        / n_total
+}
+
+/// Compute (S₁ᵢ, Sₜᵢ) for each parameter from pre-computed function values.
+///
+/// Jansen estimator (Saltelli 2010):
+///   S₁ᵢ = [(1/N) Σ f_B[j] × (f_ABi[j] - f_A[j])] / Var(Y)
+///   Sₜᵢ = [(1/2N) Σ (f_A[j] - f_ABi[j])²] / Var(Y)
+#[allow(clippy::cast_precision_loss, clippy::indexing_slicing)]
+pub(crate) fn compute_indices(
+    f_a: &[f64],
+    f_b: &[f64],
+    f_ab: &[Vec<f64>],
+    dim: usize,
+) -> Vec<(f64, f64)> {
+    let n = f_a.len() as f64;
+    let var_y = compute_variance(f_a, f_b);
+
+    if var_y < f64::EPSILON {
+        return vec![(0.0, 0.0); dim];
+    }
+
+    (0..dim)
+        .map(|i| {
+            let v_i: f64 = f_b
+                .iter()
+                .zip(f_ab[i].iter())
+                .zip(f_a.iter())
+                .map(|((&fb, &fab), &fa)| fb * (fab - fa))
+                .sum::<f64>()
+                / n;
+            let s1 = v_i / var_y;
+
+            let v_ti: f64 = f_a
+                .iter()
+                .zip(f_ab[i].iter())
+                .map(|(&fa, &fab)| (fa - fab).powi(2))
+                .sum::<f64>()
+                / (2.0 * n);
+            let st = v_ti / var_y;
+
+            (s1, st)
+        })
+        .collect()
+}
+
+/// Results of a Sobol variance-based sensitivity analysis.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SobolResult {
+    pub parameters: Vec<SobolParameterResult>,
+    /// Sum of all first-order indices (close to 1.0 for additive models).
+    pub s1_sum: f64,
+    /// Total output variance Var(Y).
+    pub output_variance: f64,
+    /// Total number of model evaluations.
+    pub evaluations: u64,
+    pub config: SobolConfig,
+}
+
+impl SobolResult {
+    /// Parameters ranked by descending S₁ (most influential first-order effect first).
+    pub fn rankings(&self) -> Vec<&SobolParameterResult> {
+        let mut r: Vec<_> = self.parameters.iter().collect();
+        r.sort_by(|a, b| b.s1.partial_cmp(&a.s1).unwrap_or(std::cmp::Ordering::Equal));
+        r
+    }
+
+    /// Parameters ranked by descending Sₜ (most influential total effect first).
+    pub fn rankings_total(&self) -> Vec<&SobolParameterResult> {
+        let mut r: Vec<_> = self.parameters.iter().collect();
+        r.sort_by(|a, b| b.st.partial_cmp(&a.st).unwrap_or(std::cmp::Ordering::Equal));
+        r
+    }
+}
+
+/// Sobol sensitivity indices for a single parameter.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SobolParameterResult {
+    pub name: String,
+    /// First-order sensitivity index.
+    pub s1: f64,
+    /// Total-order sensitivity index.
+    pub st: f64,
+    /// Bootstrap confidence interval for S₁.
+    pub s1_ci: (f64, f64),
+    /// Bootstrap confidence interval for Sₜ.
+    pub st_ci: (f64, f64),
+    /// Interaction effect: Sₜ - S₁.
+    pub interaction: f64,
 }
 
 #[cfg(test)]
@@ -257,5 +362,115 @@ mod tests {
             bootstrap_resamples: 100,
         };
         assert!(config.validate().is_ok());
+    }
+
+    /// Evaluate a synthetic function on Saltelli matrices and compute indices.
+    fn synthetic_sobol<F>(n: usize, dim: usize, f: F) -> Vec<(f64, f64)>
+    where
+        F: Fn(&[f64]) -> f64,
+    {
+        let (a, b, ab) = build_saltelli_matrices(n, dim).unwrap();
+        let f_a: Vec<f64> = a.iter().map(|row| f(row)).collect();
+        let f_b: Vec<f64> = b.iter().map(|row| f(row)).collect();
+        let f_ab: Vec<Vec<f64>> = ab
+            .iter()
+            .map(|ab_i| ab_i.iter().map(|row| f(row)).collect())
+            .collect();
+        compute_indices(&f_a, &f_b, &f_ab, dim)
+    }
+
+    #[test]
+    fn sobol_linear_additive() {
+        let indices = synthetic_sobol(4096, 2, |x| 3.0 * x[0] + x[1]);
+
+        let (s1_x0, st_x0) = indices[0];
+        let (s1_x1, st_x1) = indices[1];
+
+        assert!(
+            (s1_x0 - 0.9).abs() < 0.05,
+            "S1(x0) should be ~0.9, got {s1_x0}"
+        );
+        assert!(
+            (s1_x1 - 0.1).abs() < 0.05,
+            "S1(x1) should be ~0.1, got {s1_x1}"
+        );
+        assert!(
+            (st_x0 - s1_x0).abs() < 0.05,
+            "ST(x0) should be ~S1(x0) for additive model, got ST={st_x0}, S1={s1_x0}"
+        );
+        assert!(
+            (st_x1 - s1_x1).abs() < 0.05,
+            "ST(x1) should be ~S1(x1) for additive model, got ST={st_x1}, S1={s1_x1}"
+        );
+    }
+
+    #[test]
+    fn sobol_single_variable() {
+        let indices = synthetic_sobol(4096, 2, |x| x[0]);
+
+        let (s1_x0, st_x0) = indices[0];
+        let (s1_x1, _st_x1) = indices[1];
+
+        assert!(
+            (s1_x0 - 1.0).abs() < 0.05,
+            "S1(x0) should be ~1.0, got {s1_x0}"
+        );
+        assert!(s1_x1.abs() < 0.05, "S1(x1) should be ~0.0, got {s1_x1}");
+        assert!(
+            (st_x0 - 1.0).abs() < 0.05,
+            "ST(x0) should be ~1.0, got {st_x0}"
+        );
+    }
+
+    #[test]
+    fn sobol_constant() {
+        let indices = synthetic_sobol(4096, 3, |_| 5.0);
+
+        for (i, &(s1, st)) in indices.iter().enumerate() {
+            assert!(s1.abs() < f64::EPSILON, "S1(x{i}) should be 0, got {s1}");
+            assert!(st.abs() < f64::EPSILON, "ST(x{i}) should be 0, got {st}");
+        }
+    }
+
+    #[test]
+    fn sobol_sum_s1_close_to_one() {
+        let indices = synthetic_sobol(4096, 3, |x| 2.0 * x[0] + x[1] + 0.5 * x[2]);
+
+        let s1_sum: f64 = indices.iter().map(|(s1, _)| s1).sum();
+        assert!(
+            (0.9..=1.1).contains(&s1_sum),
+            "sum of S1 should be in [0.9, 1.1] for additive model, got {s1_sum}"
+        );
+    }
+
+    #[test]
+    fn sobol_st_geq_s1() {
+        let indices = synthetic_sobol(4096, 3, |x| x[0] * x[1] + x[2]);
+
+        for (i, &(s1, st)) in indices.iter().enumerate() {
+            assert!(
+                st >= s1 - 0.05,
+                "ST(x{i}) should be >= S1(x{i}) - 0.05: ST={st}, S1={s1}"
+            );
+        }
+    }
+
+    #[test]
+    fn variance_computation_no_alloc() {
+        let f_a = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let f_b = vec![6.0, 7.0, 8.0, 9.0, 10.0];
+
+        let var = compute_variance(&f_a, &f_b);
+
+        let mut merged = f_a.clone();
+        merged.extend_from_slice(&f_b);
+        let n = merged.len() as f64;
+        let mean = merged.iter().sum::<f64>() / n;
+        let naive_var = merged.iter().map(|&v| (v - mean).powi(2)).sum::<f64>() / n;
+
+        assert!(
+            (var - naive_var).abs() < 1e-12,
+            "compute_variance={var} should match naive={naive_var}"
+        );
     }
 }

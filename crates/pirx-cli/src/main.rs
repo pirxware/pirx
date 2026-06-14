@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(
@@ -55,6 +55,31 @@ enum Cli {
         #[arg(long)]
         threads: Option<usize>,
     },
+
+    /// Parameter sensitivity analysis.
+    Sensitivity {
+        #[command(subcommand)]
+        command: SensitivityCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum SensitivityCommand {
+    /// Run Morris elementary effects screening.
+    Morris {
+        /// Path to the circuit JSON file (.pirx.json).
+        #[arg(long)]
+        circuit: PathBuf,
+        /// Path to the hardware model TOML file.
+        #[arg(long)]
+        model: PathBuf,
+        /// Path to the sensitivity sweep TOML configuration.
+        #[arg(long)]
+        sweep: PathBuf,
+        /// Output path for the JSON Morris result.
+        #[arg(long, default_value = "morris_result.json")]
+        output: PathBuf,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -71,6 +96,10 @@ enum CliError {
     Engine(#[from] pirx_core::EngineError),
     #[error("monte carlo error: {0}")]
     MonteCarlo(#[from] pirx_core::MonteCarloError),
+    #[error("sensitivity analysis error: {0}")]
+    Sensitivity(#[from] pirx_sensitivity::SensitivityError),
+    #[error("sweep config does not contain a [sweep.morris] section")]
+    MissingMorrisConfig,
 }
 
 impl CliError {
@@ -81,7 +110,9 @@ impl CliError {
             | Self::Validation(_)
             | Self::Hardware(_)
             | Self::Engine(_)
-            | Self::MonteCarlo(_) => 1,
+            | Self::MonteCarlo(_)
+            | Self::Sensitivity(_)
+            | Self::MissingMorrisConfig => 1,
         }
     }
 }
@@ -214,6 +245,165 @@ fn run_monte_carlo_cmd(
     Ok(())
 }
 
+fn run_morris_cmd(
+    circuit: &Path,
+    model: &Path,
+    sweep: &Path,
+    output: &Path,
+) -> Result<(), CliError> {
+    let circuit_json = std::fs::read_to_string(circuit)?;
+    let profiler_circuit: pirx_ir::circuit::ProfilerCircuit = serde_json::from_str(&circuit_json)?;
+    let validated = pirx_ir::validate::validate(profiler_circuit)?;
+
+    let hw_toml = std::fs::read_to_string(model)?;
+    let hw_model = pirx_hw::model::load(&hw_toml)?;
+
+    let sweep_toml = std::fs::read_to_string(sweep)?;
+    let config = pirx_sensitivity::parse_sensitivity_config(&sweep_toml)?;
+
+    let morris_config = config.sweep.morris.ok_or(CliError::MissingMorrisConfig)?;
+    let eval_config = pirx_sensitivity::EvalConfig {
+        mc_replicas: config.sweep.mc_replicas,
+        base_seed: config.sweep.base_seed,
+        max_cycles: config.sweep.max_cycles,
+        metric: config.sweep.metric,
+    };
+    let space = pirx_sensitivity::ParameterSpace::new(config.parameters)?;
+    space.validate(&hw_model)?;
+
+    let start = std::time::Instant::now();
+    let result = pirx_sensitivity::morris_screening(
+        &validated,
+        &hw_model,
+        &space,
+        &eval_config,
+        morris_config,
+    )?;
+    let elapsed = start.elapsed();
+
+    let json = serde_json::to_string_pretty(&result)?;
+    std::fs::write(output, &json)?;
+
+    print_morris_summary(&result, &eval_config, elapsed, output);
+
+    Ok(())
+}
+
+fn sensitivity_bar(mu_star: f64, max_mu_star: f64) -> String {
+    if max_mu_star <= 0.0 || mu_star <= 0.0 {
+        return String::from("\u{258f}");
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let width = (10.0 * mu_star / max_mu_star).clamp(0.0, 10.0).round() as usize;
+    if width == 0 {
+        String::from("\u{258f}")
+    } else {
+        "\u{2588}".repeat(width)
+    }
+}
+
+fn sensitivity_category(mu_star: f64, sigma: f64, max_mu_star: f64) -> &'static str {
+    if max_mu_star <= 0.0 {
+        return "negligible";
+    }
+    if mu_star > 0.1 * max_mu_star {
+        if sigma > 0.5 * mu_star {
+            "important (nonlinear)"
+        } else {
+            "important (additive)"
+        }
+    } else if mu_star > 0.01 * max_mu_star {
+        "moderate"
+    } else {
+        "negligible"
+    }
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn print_morris_summary(
+    result: &pirx_sensitivity::MorrisResult,
+    eval_config: &pirx_sensitivity::EvalConfig,
+    elapsed: std::time::Duration,
+    output: &Path,
+) {
+    let dim = result.parameters.len();
+    let points_per_traj = dim + 1;
+
+    let metric_name = serde_json::to_string(&eval_config.metric)
+        .unwrap_or_else(|_| String::from("\"unknown\""))
+        .trim_matches('"')
+        .to_owned();
+
+    eprintln!(
+        "Morris Screening: {} trajectories \u{00d7} {} points = {} evaluations",
+        result.config.trajectories, points_per_traj, result.evaluations,
+    );
+    eprintln!(
+        "Metric: {} | MC replicas: {}",
+        metric_name, eval_config.mc_replicas,
+    );
+    eprintln!();
+
+    let ranked = result.rankings();
+    let max_mu_star = ranked.first().map_or(0.0, |p| p.mu_star);
+
+    let name_width = ranked
+        .iter()
+        .map(|p| p.name.len())
+        .max()
+        .unwrap_or(9)
+        .max(9);
+
+    eprintln!(
+        "{:<name_w$} {:>10} {:>10}    Category",
+        "Parameter",
+        "\u{03bc}*",
+        "\u{03c3}",
+        name_w = name_width,
+    );
+    eprintln!("{}", "\u{2500}".repeat(name_width + 10 + 10 + 4 + 30));
+
+    for p in &ranked {
+        let bar = sensitivity_bar(p.mu_star, max_mu_star);
+        let cat = sensitivity_category(p.mu_star, p.sigma, max_mu_star);
+        eprintln!(
+            "{:<name_w$} {:>10.1} {:>10.1}    {:<10} {}",
+            p.name,
+            p.mu_star,
+            p.sigma,
+            bar,
+            cat,
+            name_w = name_width,
+        );
+    }
+
+    eprintln!();
+
+    let evals_per_sec = if elapsed.as_secs_f64() > 0.0 {
+        result.evaluations as f64 / elapsed.as_secs_f64()
+    } else {
+        0.0
+    };
+
+    eprintln!(
+        "Wall time: {:.1}s ({:.1} evals/s)",
+        elapsed.as_secs_f64(),
+        evals_per_sec,
+    );
+
+    let important: Vec<&str> = ranked
+        .iter()
+        .filter(|p| max_mu_star > 0.0 && p.mu_star > 0.1 * max_mu_star)
+        .map(|p| p.name.as_str())
+        .collect();
+
+    if !important.is_empty() {
+        eprintln!("Suggested Sobol focus: {}", important.join(", "));
+    }
+
+    eprintln!("\u{2192} {}", output.display());
+}
+
 fn main() {
     let cli = Cli::parse();
     let result = match cli {
@@ -234,6 +424,14 @@ fn main() {
             max_cycles,
             threads,
         } => run_monte_carlo_cmd(&circuit, &hw, &output, replicas, seed, max_cycles, threads),
+        Cli::Sensitivity { command } => match command {
+            SensitivityCommand::Morris {
+                circuit,
+                model,
+                sweep,
+                output,
+            } => run_morris_cmd(&circuit, &model, &sweep, &output),
+        },
     };
     if let Err(e) = result {
         let code = e.exit_code();

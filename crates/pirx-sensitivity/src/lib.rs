@@ -11,10 +11,9 @@ pub mod parameter;
 pub mod sample;
 pub mod sobol;
 
-#[allow(dead_code)]
-pub(crate) mod config;
+pub mod config;
 
-pub use config::MorrisConfig;
+pub use config::{MorrisConfig, SensitivityConfig, parse_sensitivity_config};
 pub use error::SensitivityError;
 pub use metric::OutputMetric;
 pub use morris::{MorrisParameterResult, MorrisResult, morris_screening};

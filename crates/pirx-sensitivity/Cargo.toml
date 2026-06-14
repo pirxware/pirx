@@ -1,0 +1,27 @@
+[package]
+name = "pirx-sensitivity"
+version = "0.1.0"
+publish = false
+description = "Parameter sensitivity analysis for hardware models"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+pirx-core = { workspace = true }
+pirx-hw = { workspace = true }
+pirx-ir = { workspace = true }
+rayon = { workspace = true }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+pirx-testkit = { workspace = true }
+proptest = "1"
+
+[lints]
+workspace = true

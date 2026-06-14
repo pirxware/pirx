@@ -44,25 +44,26 @@ Pirx tells you *where* those 16 hours go — which cycles are factory-bound, whi
 - **Post-hoc trace analysis** — single O(n) pass producing time-bucketed execution profiles: factory utilization, buffer occupancy, bottleneck classification (factory-throughput / routing-contention / balanced), stall records, injection error counts, and critical-path extension
 - **Pluggable hardware models** — TOML-specified, validated at load time; surface code, color code, and qLDPC families; ships with two reference models (d=17 cultivation, d=17 distillation)
 - **Property-based testing** — proptest-driven invariant checking (determinism, monotonicity, buffer bounds, factory scaling) plus Criterion/CodSpeed benchmarks
+- **Sensitivity analysis** — Morris screening for cheap parameter ranking, Sobol variance-based indices (Saltelli/Jansen) with bootstrap confidence intervals for rigorous attribution of runtime variance to hardware parameters
 
 **Planned:**
 
-- Sensitivity analysis — Sobol indices to reveal which hardware parameter dominates runtime variance
 - Framework adapters — OpenQASM 3, FTCircuitBench
 - Cross-architecture comparison — same circuit profiled across code families
 - Full CLI with JSON report output
 
 ## Architecture
 
-Six crates with strict dependency direction:
+Seven crates with strict dependency direction:
 
 ```
-pirx-ir         Framework-agnostic circuit representation (Profiler IR)
-pirx-hw         Hardware model TOML types, parsing, and validation
-pirx-core       DES engine, factory models, buffer, trace collection, analysis
-pirx-adapters   Framework converters (planned: OpenQASM 3, FTCircuitBench)
-pirx-cli        CLI binary (scaffold)
-pirx-testkit    Shared test fixtures for the workspace (dev only)
+pirx-ir           Framework-agnostic circuit representation (Profiler IR)
+pirx-hw           Hardware model TOML types, parsing, and validation
+pirx-core         DES engine, factory models, buffer, trace collection, analysis
+pirx-sensitivity  Morris screening and Sobol variance-based sensitivity analysis
+pirx-adapters     Framework converters (planned: OpenQASM 3, FTCircuitBench)
+pirx-cli          CLI binary
+pirx-testkit      Shared test fixtures for the workspace (dev only)
 ```
 
 The core treats FTQC execution as a production system: magic-state factories are stochastic producers, the algorithm's T-gate sequence is the consumer, and the buffer between them is inventory. The math is queueing theory, critical-path scheduling, and global sensitivity analysis — well-established engineering disciplines applied to a domain that hasn't adopted them yet.

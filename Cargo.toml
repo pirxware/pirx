@@ -5,6 +5,7 @@ members = [
     "crates/pirx-hw",
     "crates/pirx-core",
     "crates/pirx-adapters",
+    "crates/pirx-sensitivity",
     "crates/pirx-cli",
     "crates/pirx-testkit",
     "python",
@@ -24,6 +25,7 @@ pirx-ir = { path = "crates/pirx-ir" }
 pirx-hw = { path = "crates/pirx-hw" }
 pirx-core = { path = "crates/pirx-core" }
 pirx-adapters = { path = "crates/pirx-adapters" }
+pirx-sensitivity = { path = "crates/pirx-sensitivity" }
 pirx-testkit = { path = "crates/pirx-testkit" }
 
 # Serialization

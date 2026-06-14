@@ -1,0 +1,21 @@
+[sweep]
+metric = "total_cycles"
+mc_replicas = 1
+base_seed = 42
+max_cycles = 500
+
+[sweep.morris]
+trajectories = 2
+levels = 4
+
+[[parameters]]
+name = "factory_count"
+min = 1
+max = 4
+kind = "integer"
+
+[[parameters]]
+name = "overhead_cycles"
+min = 1
+max = 10
+kind = "integer"

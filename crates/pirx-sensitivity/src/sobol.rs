@@ -4,6 +4,8 @@
 
 use pirx_hw::model::HardwareModel;
 use pirx_ir::ValidatedCircuit;
+use rand::Rng as _;
+use rand_chacha::ChaCha12Rng;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -182,6 +184,75 @@ pub(crate) fn compute_indices(
         .collect()
 }
 
+/// Bootstrap confidence intervals for all parameters.
+///
+/// Paired resampling: same index set for `f_a`, `f_b`, and all `f_ab[p]`
+/// to preserve the correlation structure of Saltelli's design.
+///
+/// Returns `Vec<((s1_lo, s1_hi), (st_lo, st_hi))>` — one entry per parameter.
+#[allow(clippy::cast_precision_loss, clippy::indexing_slicing)]
+pub(crate) fn bootstrap_ci(
+    f_a: &[f64],
+    f_b: &[f64],
+    f_ab: &[Vec<f64>],
+    dim: usize,
+    config: &SobolConfig,
+    rng: &mut ChaCha12Rng,
+) -> Vec<((f64, f64), (f64, f64))> {
+    let n = f_a.len();
+    let r = config.bootstrap_resamples as usize;
+    let alpha = 1.0 - config.confidence;
+
+    let mut s1_samples: Vec<Vec<f64>> = vec![Vec::with_capacity(r); dim];
+    let mut st_samples: Vec<Vec<f64>> = vec![Vec::with_capacity(r); dim];
+
+    for _ in 0..r {
+        let indices: Vec<usize> = (0..n).map(|_| rng.random_range(0..n)).collect();
+        let ra: Vec<f64> = indices.iter().map(|&i| f_a[i]).collect();
+        let rb: Vec<f64> = indices.iter().map(|&i| f_b[i]).collect();
+        let rab: Vec<Vec<f64>> = (0..dim)
+            .map(|p| indices.iter().map(|&i| f_ab[p][i]).collect())
+            .collect();
+
+        for (p, (s1, st)) in compute_indices(&ra, &rb, &rab, dim).into_iter().enumerate() {
+            s1_samples[p].push(s1);
+            st_samples[p].push(st);
+        }
+    }
+
+    (0..dim)
+        .map(|p| {
+            (
+                percentile_ci(&mut s1_samples[p], alpha),
+                percentile_ci(&mut st_samples[p], alpha),
+            )
+        })
+        .collect()
+}
+
+/// Percentile-based confidence interval from bootstrap samples.
+#[allow(clippy::indexing_slicing)]
+fn percentile_ci(samples: &mut [f64], alpha: f64) -> (f64, f64) {
+    samples.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let n = samples.len();
+    if n == 0 {
+        return (0.0, 0.0);
+    }
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss
+    )]
+    let lo = ((alpha / 2.0) * n as f64).floor() as usize;
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss
+    )]
+    let hi = ((1.0 - alpha / 2.0) * n as f64).ceil() as usize;
+    (samples[lo], samples[hi.min(n - 1)])
+}
+
 /// Results of a Sobol variance-based sensitivity analysis.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SobolResult {
@@ -235,9 +306,12 @@ pub struct SobolParameterResult {
     clippy::indexing_slicing,
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
     clippy::float_cmp
 )]
 mod tests {
+    use rand::SeedableRng;
+
     use super::*;
 
     #[test]
@@ -472,5 +546,229 @@ mod tests {
             (var - naive_var).abs() < 1e-12,
             "compute_variance={var} should match naive={naive_var}"
         );
+    }
+
+    // --- Ishigami validation ---
+
+    /// Ishigami function: f(x₁, x₂, x₃) = sin(x₁) + 7·sin²(x₂) + 0.1·x₃⁴·sin(x₁)
+    fn ishigami(x: &[f64]) -> f64 {
+        let (x1, x2, x3) = (x[0], x[1], x[2]);
+        x1.sin() + 7.0 * x2.sin().powi(2) + 0.1 * x3.powi(4) * x1.sin()
+    }
+
+    #[test]
+    fn ishigami_analytical_indices() {
+        let n = 4096;
+        let dim = 3;
+        let pi = std::f64::consts::PI;
+
+        let (a, b, ab) = build_saltelli_matrices(n, dim).unwrap();
+
+        let map_to_pi =
+            |row: &[f64]| -> Vec<f64> { row.iter().map(|&u| -pi + 2.0 * pi * u).collect() };
+
+        let f_a: Vec<f64> = a.iter().map(|row| ishigami(&map_to_pi(row))).collect();
+        let f_b: Vec<f64> = b.iter().map(|row| ishigami(&map_to_pi(row))).collect();
+        let f_ab: Vec<Vec<f64>> = ab
+            .iter()
+            .map(|ab_i| ab_i.iter().map(|row| ishigami(&map_to_pi(row))).collect())
+            .collect();
+
+        let indices = compute_indices(&f_a, &f_b, &f_ab, dim);
+
+        // Analytical: S₁(x₁) ≈ 0.3139, S₁(x₂) ≈ 0.4424, S₁(x₃) = 0
+        let (s1_x1, st_x1) = indices[0];
+        let (s1_x2, st_x2) = indices[1];
+        let (s1_x3, st_x3) = indices[2];
+
+        assert!(
+            (s1_x1 - 0.3139).abs() < 0.05,
+            "S1(x1) should be ~0.3139, got {s1_x1}"
+        );
+        assert!(
+            (s1_x2 - 0.4424).abs() < 0.05,
+            "S1(x2) should be ~0.4424, got {s1_x2}"
+        );
+        assert!(s1_x3.abs() < 0.05, "S1(x3) should be ~0, got {s1_x3}");
+
+        // Analytical: Sₜ(x₁) ≈ 0.5576, Sₜ(x₂) ≈ 0.4424, Sₜ(x₃) ≈ 0.2437
+        assert!(
+            (st_x1 - 0.5576).abs() < 0.06,
+            "ST(x1) should be ~0.5576, got {st_x1}"
+        );
+        assert!(
+            (st_x2 - 0.4424).abs() < 0.05,
+            "ST(x2) should be ~0.4424, got {st_x2}"
+        );
+        assert!(
+            (st_x3 - 0.2437).abs() < 0.05,
+            "ST(x3) should be ~0.2437, got {st_x3}"
+        );
+    }
+
+    // --- Bootstrap CI tests ---
+
+    fn linear_sobol_outputs(n: usize) -> (Vec<f64>, Vec<f64>, Vec<Vec<f64>>) {
+        let dim = 2;
+        let f = |x: &[f64]| 3.0 * x[0] + x[1];
+        let (a, b, ab) = build_saltelli_matrices(n, dim).unwrap();
+        let f_a: Vec<f64> = a.iter().map(|row| f(row)).collect();
+        let f_b: Vec<f64> = b.iter().map(|row| f(row)).collect();
+        let f_ab: Vec<Vec<f64>> = ab
+            .iter()
+            .map(|ab_i| ab_i.iter().map(|row| f(row)).collect())
+            .collect();
+        (f_a, f_b, f_ab)
+    }
+
+    fn default_sobol_config() -> SobolConfig {
+        SobolConfig {
+            n_samples: 1024,
+            confidence: 0.95,
+            bootstrap_resamples: 1000,
+        }
+    }
+
+    #[test]
+    fn ci_contains_point_estimate() {
+        let (f_a, f_b, f_ab) = linear_sobol_outputs(1024);
+        let dim = 2;
+        let config = default_sobol_config();
+        let mut rng =
+            ChaCha12Rng::seed_from_u64(42_u64.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(1));
+
+        let point = compute_indices(&f_a, &f_b, &f_ab, dim);
+        let cis = bootstrap_ci(&f_a, &f_b, &f_ab, dim, &config, &mut rng);
+
+        for p in 0..dim {
+            let (s1, st) = point[p];
+            let ((s1_lo, s1_hi), (st_lo, st_hi)) = cis[p];
+            assert!(
+                s1_lo <= s1 && s1 <= s1_hi,
+                "param {p}: S1={s1} not in [{s1_lo}, {s1_hi}]"
+            );
+            assert!(
+                st_lo <= st && st <= st_hi,
+                "param {p}: ST={st} not in [{st_lo}, {st_hi}]"
+            );
+        }
+    }
+
+    #[test]
+    fn ci_width_decreases_with_n() {
+        let dim = 2;
+        let config = default_sobol_config();
+
+        let (f_a_small, f_b_small, f_ab_small) = linear_sobol_outputs(256);
+        let mut rng_small =
+            ChaCha12Rng::seed_from_u64(42_u64.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(1));
+        let ci_small = bootstrap_ci(
+            &f_a_small,
+            &f_b_small,
+            &f_ab_small,
+            dim,
+            &config,
+            &mut rng_small,
+        );
+
+        let (f_a_large, f_b_large, f_ab_large) = linear_sobol_outputs(2048);
+        let mut rng_large =
+            ChaCha12Rng::seed_from_u64(42_u64.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(1));
+        let ci_large = bootstrap_ci(
+            &f_a_large,
+            &f_b_large,
+            &f_ab_large,
+            dim,
+            &config,
+            &mut rng_large,
+        );
+
+        for p in 0..dim {
+            let width_small = ci_small[p].0.1 - ci_small[p].0.0;
+            let width_large = ci_large[p].0.1 - ci_large[p].0.0;
+            assert!(
+                width_large < width_small,
+                "param {p}: S1 CI should narrow with more samples: \
+                 N=256 width={width_small:.4}, N=2048 width={width_large:.4}"
+            );
+        }
+    }
+
+    #[test]
+    fn ci_95_wider_than_68() {
+        let (f_a, f_b, f_ab) = linear_sobol_outputs(1024);
+        let dim = 2;
+
+        let config_95 = SobolConfig {
+            confidence: 0.95,
+            ..default_sobol_config()
+        };
+        let config_68 = SobolConfig {
+            confidence: 0.68,
+            ..default_sobol_config()
+        };
+
+        let mut rng_95 =
+            ChaCha12Rng::seed_from_u64(42_u64.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(1));
+        let mut rng_68 =
+            ChaCha12Rng::seed_from_u64(42_u64.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(1));
+
+        let ci_95 = bootstrap_ci(&f_a, &f_b, &f_ab, dim, &config_95, &mut rng_95);
+        let ci_68 = bootstrap_ci(&f_a, &f_b, &f_ab, dim, &config_68, &mut rng_68);
+
+        for p in 0..dim {
+            let w95 = ci_95[p].0.1 - ci_95[p].0.0;
+            let w68 = ci_68[p].0.1 - ci_68[p].0.0;
+            assert!(
+                w95 > w68,
+                "param {p}: 95% CI should be wider than 68%: w95={w95:.4}, w68={w68:.4}"
+            );
+        }
+    }
+
+    #[test]
+    fn ci_deterministic() {
+        let (f_a, f_b, f_ab) = linear_sobol_outputs(1024);
+        let dim = 2;
+        let config = default_sobol_config();
+        let seed = 42_u64.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(1);
+
+        let mut rng1 = ChaCha12Rng::seed_from_u64(seed);
+        let ci1 = bootstrap_ci(&f_a, &f_b, &f_ab, dim, &config, &mut rng1);
+
+        let mut rng2 = ChaCha12Rng::seed_from_u64(seed);
+        let ci2 = bootstrap_ci(&f_a, &f_b, &f_ab, dim, &config, &mut rng2);
+
+        for p in 0..dim {
+            assert!(
+                (ci1[p].0.0 - ci2[p].0.0).abs() < f64::EPSILON
+                    && (ci1[p].0.1 - ci2[p].0.1).abs() < f64::EPSILON
+                    && (ci1[p].1.0 - ci2[p].1.0).abs() < f64::EPSILON
+                    && (ci1[p].1.1 - ci2[p].1.1).abs() < f64::EPSILON,
+                "param {p}: CIs must be identical for same seed"
+            );
+        }
+    }
+
+    #[test]
+    fn ci_ordered() {
+        let (f_a, f_b, f_ab) = linear_sobol_outputs(1024);
+        let dim = 2;
+        let config = default_sobol_config();
+        let mut rng =
+            ChaCha12Rng::seed_from_u64(42_u64.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(1));
+
+        let cis = bootstrap_ci(&f_a, &f_b, &f_ab, dim, &config, &mut rng);
+
+        for (p, &((s1_lo, s1_hi), (st_lo, st_hi))) in cis.iter().enumerate() {
+            assert!(
+                s1_lo <= s1_hi,
+                "param {p}: S1 CI lower {s1_lo} > upper {s1_hi}"
+            );
+            assert!(
+                st_lo <= st_hi,
+                "param {p}: ST CI lower {st_lo} > upper {st_hi}"
+            );
+        }
     }
 }

@@ -2,11 +2,19 @@
 
 #![allow(dead_code)]
 
-use rand::Rng as _;
+use pirx_hw::model::HardwareModel;
+use pirx_ir::ValidatedCircuit;
+use rand::{Rng as _, SeedableRng};
 use rand_chacha::ChaCha12Rng;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::{config::MorrisConfig, error::SensitivityError};
+use crate::{
+    config::MorrisConfig,
+    error::SensitivityError,
+    parameter::ParameterSpace,
+    sample::{EvalConfig, evaluate_point},
+};
 
 /// Results of a Morris elementary effects analysis.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -140,6 +148,126 @@ pub(crate) fn generate_trajectories(
         .collect()
 }
 
+/// Extract elementary effects from pre-computed function values.
+#[allow(clippy::indexing_slicing)]
+pub(crate) fn extract_elementary_effects(
+    all_values: &[f64],
+    trajectories: &[MorrisTrajectory],
+    dim: usize,
+    levels: u32,
+) -> Vec<Vec<f64>> {
+    let delta = delta_value(levels);
+    let points_per_traj = dim + 1;
+    let mut ee_per_param: Vec<Vec<f64>> = vec![Vec::with_capacity(trajectories.len()); dim];
+
+    for (t, traj) in trajectories.iter().enumerate() {
+        let base_offset = t * points_per_traj;
+        for (j, &param_idx) in traj.permutation.iter().enumerate() {
+            let f_before = all_values[base_offset + j];
+            let f_after = all_values[base_offset + j + 1];
+            let delta_signed = traj.signs[j] * delta;
+            let ee = (f_after - f_before) / delta_signed;
+            ee_per_param[param_idx].push(ee);
+        }
+    }
+
+    ee_per_param
+}
+
+/// Evaluate all trajectory points in parallel and extract elementary effects.
+#[allow(clippy::indexing_slicing)]
+pub(crate) fn evaluate_trajectories(
+    trajectories: &[MorrisTrajectory],
+    circuit: &ValidatedCircuit,
+    base_hw: &HardwareModel,
+    space: &ParameterSpace,
+    eval_config: &EvalConfig,
+    config: MorrisConfig,
+) -> Result<Vec<Vec<f64>>, SensitivityError> {
+    let points_per_traj = space.dim() + 1;
+    let total_points = trajectories.len() * points_per_traj;
+
+    let all_values: Vec<f64> = (0..total_points)
+        .into_par_iter()
+        .map(|flat_idx| {
+            let t = flat_idx / points_per_traj;
+            let s = flat_idx % points_per_traj;
+            evaluate_point(
+                circuit,
+                base_hw,
+                space,
+                &trajectories[t].points[s],
+                flat_idx,
+                eval_config,
+            )
+        })
+        .collect::<Result<_, _>>()?;
+
+    Ok(extract_elementary_effects(
+        &all_values,
+        trajectories,
+        space.dim(),
+        config.levels,
+    ))
+}
+
+/// Aggregate elementary effects into Morris sensitivity indices.
+#[allow(clippy::cast_precision_loss)]
+pub(crate) fn aggregate_morris(
+    ee_per_param: Vec<Vec<f64>>,
+    space: &ParameterSpace,
+    config: MorrisConfig,
+) -> MorrisResult {
+    let parameters = ee_per_param
+        .into_iter()
+        .zip(space.params().iter())
+        .map(|(ees, param)| {
+            let n = ees.len() as f64;
+            let mu = ees.iter().sum::<f64>() / n;
+            let mu_star = ees.iter().map(|e| e.abs()).sum::<f64>() / n;
+            let sigma = if n > 1.0 {
+                (ees.iter().map(|e| (e - mu).powi(2)).sum::<f64>() / (n - 1.0)).sqrt()
+            } else {
+                0.0
+            };
+
+            MorrisParameterResult {
+                name: param.name.clone(),
+                mu,
+                mu_star,
+                sigma,
+                elementary_effects: ees,
+            }
+        })
+        .collect();
+
+    MorrisResult {
+        parameters,
+        evaluations: u64::from(config.trajectories) * (space.dim() as u64 + 1),
+        config,
+    }
+}
+
+/// Run a complete Morris elementary effects screening analysis.
+pub fn morris_screening(
+    circuit: &ValidatedCircuit,
+    base_hw: &HardwareModel,
+    space: &ParameterSpace,
+    eval_config: &EvalConfig,
+    config: MorrisConfig,
+) -> Result<MorrisResult, SensitivityError> {
+    config.validate()?;
+    if space.dim() == 0 {
+        return Err(SensitivityError::EmptyParameterSpace);
+    }
+
+    let mut rng = ChaCha12Rng::seed_from_u64(eval_config.base_seed);
+    let trajectories = generate_trajectories(space.dim(), config, &mut rng);
+    let ee_per_param =
+        evaluate_trajectories(&trajectories, circuit, base_hw, space, eval_config, config)?;
+    Ok(aggregate_morris(ee_per_param, space, config))
+}
+
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -147,12 +275,50 @@ pub(crate) fn generate_trajectories(
     clippy::panic,
     clippy::indexing_slicing,
     clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
     clippy::float_cmp
 )]
 mod tests {
     use rand::SeedableRng;
 
     use super::*;
+    use crate::parameter::{ParameterDef, ParameterKind, ParameterSpace};
+
+    fn default_config() -> MorrisConfig {
+        MorrisConfig {
+            trajectories: 20,
+            levels: 4,
+        }
+    }
+
+    fn synthetic_screening<F>(dim: usize, config: MorrisConfig, f: F) -> MorrisResult
+    where
+        F: Fn(&[f64]) -> f64,
+    {
+        let mut rng = ChaCha12Rng::seed_from_u64(42);
+        let trajectories = generate_trajectories(dim, config, &mut rng);
+
+        let all_values: Vec<f64> = trajectories
+            .iter()
+            .flat_map(|traj| traj.points.iter())
+            .map(|pt| f(pt))
+            .collect();
+
+        let ee_per_param =
+            extract_elementary_effects(&all_values, &trajectories, dim, config.levels);
+
+        let params: Vec<ParameterDef> = (0..dim)
+            .map(|i| ParameterDef {
+                name: format!("x{i}"),
+                min: 0.0,
+                max: 1.0,
+                kind: ParameterKind::Continuous,
+            })
+            .collect();
+        let space = ParameterSpace::new(params).unwrap();
+
+        aggregate_morris(ee_per_param, &space, config)
+    }
 
     #[test]
     fn delta_value_levels_4() {
@@ -373,6 +539,136 @@ mod tests {
                     !identical,
                     "consecutive points {i} and {} are identical — zero perturbation",
                     i + 1
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ee_constant_function() {
+        let result = synthetic_screening(3, default_config(), |_| 42.0);
+        for p in &result.parameters {
+            assert!(p.mu.abs() < 1e-12, "mu should be 0, got {}", p.mu);
+            assert!(p.mu_star < 1e-12, "mu_star should be 0, got {}", p.mu_star);
+            assert!(p.sigma < 1e-12, "sigma should be 0, got {}", p.sigma);
+            for &ee in &p.elementary_effects {
+                assert!(ee.abs() < 1e-12, "EE should be 0, got {ee}");
+            }
+        }
+    }
+
+    #[test]
+    fn ee_linear_function() {
+        let result = synthetic_screening(2, default_config(), |x| 3.0 * x[0] + x[1]);
+        let p0 = &result.parameters[0];
+        let p1 = &result.parameters[1];
+
+        for &ee in &p0.elementary_effects {
+            assert!(
+                (ee - 3.0).abs() < 1e-10,
+                "EE for x0 should be 3.0, got {ee}"
+            );
+        }
+        for &ee in &p1.elementary_effects {
+            assert!(
+                (ee - 1.0).abs() < 1e-10,
+                "EE for x1 should be 1.0, got {ee}"
+            );
+        }
+
+        assert!((p0.mu - 3.0).abs() < 1e-10);
+        assert!((p0.mu_star - 3.0).abs() < 1e-10);
+        assert!(p0.sigma < 1e-10);
+
+        assert!((p1.mu - 1.0).abs() < 1e-10);
+        assert!((p1.mu_star - 1.0).abs() < 1e-10);
+        assert!(p1.sigma < 1e-10);
+    }
+
+    #[test]
+    fn ee_quadratic_function() {
+        let result = synthetic_screening(2, default_config(), |x| x[0] * x[0]);
+        let p0 = &result.parameters[0];
+        assert!(p0.mu_star > 0.0, "mu_star should be > 0 for quadratic");
+        assert!(p0.sigma > 0.0, "sigma should be > 0 for nonlinear");
+    }
+
+    #[test]
+    fn ee_interaction() {
+        let result = synthetic_screening(2, default_config(), |x| x[0] * x[1]);
+        for p in &result.parameters {
+            assert!(
+                p.sigma > 0.0,
+                "sigma should be > 0 for interaction, param {}",
+                p.name
+            );
+        }
+    }
+
+    #[test]
+    fn mu_star_ranking() {
+        let result = synthetic_screening(2, default_config(), |x| 3.0 * x[0] + x[1]);
+        let rankings = result.rankings();
+        assert_eq!(rankings[0].name, "x0", "coeff 3 should rank first");
+        assert_eq!(rankings[1].name, "x1", "coeff 1 should rank second");
+    }
+
+    #[test]
+    fn mu_star_nonnegative() {
+        let result = synthetic_screening(3, default_config(), |x| x[0] * x[0] - 2.0 * x[1] + x[2]);
+        for p in &result.parameters {
+            assert!(
+                p.mu_star >= 0.0,
+                "mu_star must be >= 0, got {} for {}",
+                p.mu_star,
+                p.name
+            );
+        }
+    }
+
+    #[test]
+    fn sigma_nonnegative() {
+        let result = synthetic_screening(3, default_config(), |x| x[0] * x[1] * x[2]);
+        for p in &result.parameters {
+            assert!(
+                p.sigma >= 0.0,
+                "sigma must be >= 0, got {} for {}",
+                p.sigma,
+                p.name
+            );
+        }
+    }
+
+    #[test]
+    fn sigma_uses_bessel_correction() {
+        let config = MorrisConfig {
+            trajectories: 2,
+            levels: 4,
+        };
+        let result = synthetic_screening(2, config, |x| x[0] * x[0]);
+
+        for p in &result.parameters {
+            let ees = &p.elementary_effects;
+            assert_eq!(ees.len(), 2, "should have 2 EEs with R=2");
+
+            let n = ees.len() as f64;
+            let mu = ees.iter().sum::<f64>() / n;
+            let sigma_bessel =
+                (ees.iter().map(|e| (e - mu).powi(2)).sum::<f64>() / (n - 1.0)).sqrt();
+            let sigma_pop = (ees.iter().map(|e| (e - mu).powi(2)).sum::<f64>() / n).sqrt();
+
+            assert!(
+                (p.sigma - sigma_bessel).abs() < 1e-15,
+                "sigma should use Bessel's correction: got {}, expected {}",
+                p.sigma,
+                sigma_bessel
+            );
+
+            if sigma_bessel > 1e-15 {
+                assert!(
+                    (p.sigma - sigma_pop).abs() > 1e-15,
+                    "sigma should differ from population std: both {}",
+                    p.sigma
                 );
             }
         }

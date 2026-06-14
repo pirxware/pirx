@@ -40,7 +40,7 @@ const JK_DIRECTION_NUMBERS: &[(u32, u32, &[u32])] = &[
     (7, 37, &[1, 1, 3, 1, 23, 61, 109]), // dim 30
 ];
 
-const MAX_DIM: usize = JK_DIRECTION_NUMBERS.len() + 1; // 31
+pub(crate) const MAX_DIM: usize = JK_DIRECTION_NUMBERS.len() + 1; // 30
 
 /// Generate `n` Sobol quasi-random points in `dim` dimensions.
 ///

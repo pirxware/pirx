@@ -17,7 +17,7 @@ use pirx_sensitivity::{
     EvalConfig, OutputMetric, ParameterDef, ParameterKind, ParameterSpace, SobolConfig,
     sobol_analysis,
 };
-use pirx_testkit::{cultivation_hw, deterministic_distillation_hw, validated};
+use pirx_testkit::{cultivation_hw, deterministic_distillation_hw, distillation_hw, validated};
 use proptest::prelude::*;
 
 // -- Helpers ------------------------------------------------------------------
@@ -186,6 +186,141 @@ fn sobol_distillation_zero_variance() {
     }
 }
 
+#[test]
+fn sobol_high_dim_row_split() {
+    let circuit = t_chain_circuit();
+    let hw = distillation_hw();
+    let space = ParameterSpace::new(vec![
+        ParameterDef {
+            name: "factory_count".into(),
+            min: 1.0,
+            max: 4.0,
+            kind: ParameterKind::Integer,
+        },
+        ParameterDef {
+            name: "buffer_capacity".into(),
+            min: 4.0,
+            max: 32.0,
+            kind: ParameterKind::Integer,
+        },
+        ParameterDef {
+            name: "code_distance".into(),
+            min: 3.0,
+            max: 9.0,
+            kind: ParameterKind::OddInteger,
+        },
+        ParameterDef {
+            name: "injection_error_probability".into(),
+            min: 0.1,
+            max: 0.9,
+            kind: ParameterKind::Continuous,
+        },
+        ParameterDef {
+            name: "overhead_cycles".into(),
+            min: 1.0,
+            max: 10.0,
+            kind: ParameterKind::Integer,
+        },
+        ParameterDef {
+            name: "fixup_cost_cycles".into(),
+            min: 1.0,
+            max: 5.0,
+            kind: ParameterKind::Integer,
+        },
+        ParameterDef {
+            name: "cycle_time_us".into(),
+            min: 0.5,
+            max: 5.0,
+            kind: ParameterKind::Continuous,
+        },
+        ParameterDef {
+            name: "measurement_time_us".into(),
+            min: 0.1,
+            max: 2.0,
+            kind: ParameterKind::Continuous,
+        },
+        ParameterDef {
+            name: "feedback_latency_us".into(),
+            min: 0.5,
+            max: 5.0,
+            kind: ParameterKind::Continuous,
+        },
+        ParameterDef {
+            name: "physical_error_rate".into(),
+            min: 0.0001,
+            max: 0.005,
+            kind: ParameterKind::Continuous,
+        },
+        ParameterDef {
+            name: "cycles_per_round".into(),
+            min: 5.0,
+            max: 20.0,
+            kind: ParameterKind::Integer,
+        },
+        ParameterDef {
+            name: "rounds".into(),
+            min: 1.0,
+            max: 5.0,
+            kind: ParameterKind::Integer,
+        },
+        ParameterDef {
+            name: "error_correction_threshold".into(),
+            min: 0.005,
+            max: 0.02,
+            kind: ParameterKind::Continuous,
+        },
+        ParameterDef {
+            name: "logical_error_prefactor".into(),
+            min: 0.01,
+            max: 1.0,
+            kind: ParameterKind::Continuous,
+        },
+        ParameterDef {
+            name: "buffer_preload".into(),
+            min: 0.0,
+            max: 4.0,
+            kind: ParameterKind::Integer,
+        },
+        ParameterDef {
+            name: "abort_probability".into(),
+            min: 0.001,
+            max: 0.1,
+            kind: ParameterKind::Continuous,
+        },
+    ])
+    .expect("valid 16-parameter space");
+
+    assert_eq!(space.dim(), 16, "must have 16 parameters for row-split");
+
+    let eval_config = default_eval_config(42);
+    let config = SobolConfig {
+        n_samples: 64,
+        confidence: 0.95,
+        bootstrap_resamples: 100,
+    };
+
+    let result = sobol_analysis(&circuit, &hw, &space, &eval_config, config)
+        .expect("16-parameter Sobol analysis should succeed via row-split");
+
+    assert_eq!(result.parameters.len(), 16);
+    let expected_evals = 64_u64 * (16 + 2);
+    assert_eq!(
+        result.evaluations, expected_evals,
+        "expected N*(P+2) = {expected_evals} evaluations, got {}",
+        result.evaluations
+    );
+
+    // Determinism: row-split must produce identical results for same inputs.
+    let r2 = sobol_analysis(&circuit, &hw, &space, &eval_config, config)
+        .expect("second run should succeed");
+    for (p1, p2) in result.parameters.iter().zip(r2.parameters.iter()) {
+        assert_eq!(p1.s1, p2.s1, "S1 mismatch for {} across runs", p1.name);
+        assert_eq!(p1.st, p2.st, "ST mismatch for {} across runs", p1.name);
+        assert_eq!(p1.s1_ci, p2.s1_ci, "S1 CI mismatch for {}", p1.name);
+        assert_eq!(p1.st_ci, p2.st_ci, "ST CI mismatch for {}", p1.name);
+    }
+}
+
 // -- Property tests -----------------------------------------------------------
 
 proptest! {
@@ -197,9 +332,8 @@ proptest! {
         let hw = cultivation_hw();
         let space = cultivation_space();
         let eval_config = default_eval_config(seed);
-        // N=128 for tighter estimates than minimum N=64
         let config = SobolConfig {
-            n_samples: 128,
+            n_samples: 1024,
             confidence: 0.95,
             bootstrap_resamples: 100,
         };
@@ -209,8 +343,8 @@ proptest! {
 
         for p in &result.parameters {
             prop_assert!(
-                p.st >= p.s1 - 0.5,
-                "ST ({}) must be >= S1 ({}) - 0.5 for param {} (seed={seed})",
+                p.st >= p.s1 - 0.15,
+                "ST ({}) must be >= S1 ({}) - 0.15 for param {} (seed={seed})",
                 p.st,
                 p.s1,
                 p.name
@@ -225,7 +359,7 @@ proptest! {
         let space = cultivation_space();
         let eval_config = default_eval_config(seed);
         let config = SobolConfig {
-            n_samples: 128,
+            n_samples: 1024,
             confidence: 0.95,
             bootstrap_resamples: 100,
         };
@@ -235,14 +369,14 @@ proptest! {
 
         for p in &result.parameters {
             prop_assert!(
-                p.s1 >= -1.0,
-                "S1 ({}) must be >= -1.0 for param {} (seed={seed})",
+                p.s1 >= -0.3,
+                "S1 ({}) must be >= -0.3 for param {} (seed={seed})",
                 p.s1,
                 p.name
             );
             prop_assert!(
-                p.st >= -0.5,
-                "ST ({}) must be >= -0.5 for param {} (seed={seed})",
+                p.st >= -0.2,
+                "ST ({}) must be >= -0.2 for param {} (seed={seed})",
                 p.st,
                 p.name
             );

@@ -26,7 +26,7 @@ type EvaluatedOutputs = (Vec<f64>, Vec<f64>, Vec<Vec<f64>>);
 
 impl SobolConfig {
     /// Validate Sobol configuration parameters.
-    pub fn validate(self) -> Result<(), SensitivityError> {
+    pub fn validate(&self) -> Result<(), SensitivityError> {
         if !self.n_samples.is_power_of_two() {
             return Err(SensitivityError::NotPowerOfTwo(self.n_samples));
         }
@@ -51,21 +51,46 @@ impl SobolConfig {
 
 /// Construct A, B, and AB_i matrices for Saltelli's method.
 ///
-/// 1. Generate N quasi-random points in 2P dimensions
-/// 2. Column-split: A = first P columns, B = last P columns
-/// 3. For each param i: AB_i = copy of A with column i from B
-///
-/// Column-split gives independent A and B matrices because Sobol
-/// sequences have low correlation across dimensions.
+/// Strategy selection:
+/// - dim ≤ MAX_DIM/2 (currently 15): **column-split** — N points in 2P Sobol
+///   dimensions, split by columns. Better quasi-independence between A and B.
+/// - dim > MAX_DIM/2 but ≤ MAX_DIM (16–30): **row-split** — 2N points in P
+///   Sobol dimensions, split by rows. Saltelli's original formulation (2002).
+/// - dim > MAX_DIM: error.
 #[allow(clippy::indexing_slicing)]
 pub(crate) fn build_saltelli_matrices(
     n: usize,
     dim: usize,
 ) -> Result<SaltelliMatrices, SensitivityError> {
-    let raw = sobol_sequence(n, 2 * dim)?;
-    let a: Vec<Vec<f64>> = raw.iter().map(|row| row[..dim].to_vec()).collect();
-    let b: Vec<Vec<f64>> = raw.iter().map(|row| row[dim..].to_vec()).collect();
-    let ab: Vec<Vec<Vec<f64>>> = (0..dim)
+    use crate::sobol_sequence::MAX_DIM;
+
+    if dim > MAX_DIM {
+        return Err(SensitivityError::TooManyParameters {
+            max: MAX_DIM,
+            actual: dim,
+        });
+    }
+
+    let (a, b) = if 2 * dim <= MAX_DIM {
+        // Column-split: N points in 2P dimensions.
+        let raw = sobol_sequence(n, 2 * dim)?;
+        let a: Matrix = raw.iter().map(|row| row[..dim].to_vec()).collect();
+        let b: Matrix = raw.iter().map(|row| row[dim..].to_vec()).collect();
+        (a, b)
+    } else {
+        // Row-split: A from Sobol (good space-filling), B from Latin
+        // Hypercube Sampling (stratified uniform, independent of A).
+        // The Jansen estimator requires A and B to be independent samples.
+        // Plain Sobol row-split fails because blocks of the same sequence
+        // have structural correlation. LHS provides good uniformity with
+        // guaranteed independence from A.
+        let a: Matrix = sobol_sequence(n, dim)?;
+        let b: Matrix = latin_hypercube(n, dim);
+        (a, b)
+    };
+
+    // AB_i construction is identical for both strategies.
+    let ab: Vec<Matrix> = (0..dim)
         .map(|i| {
             (0..n)
                 .map(|j| {
@@ -76,7 +101,43 @@ pub(crate) fn build_saltelli_matrices(
                 .collect()
         })
         .collect();
+
     Ok((a, b, ab))
+}
+
+/// Generate an N×dim Latin Hypercube Sample (stratified random).
+///
+/// For each dimension, [0,1] is divided into N equal strata, one point is
+/// placed uniformly within each stratum, then the strata are shuffled
+/// independently per dimension. RNG derived deterministically from (n, dim).
+#[allow(clippy::cast_precision_loss, clippy::indexing_slicing)]
+fn latin_hypercube(n: usize, dim: usize) -> Matrix {
+    let seed = (n as u64)
+        .wrapping_mul(0x9E3779B97F4A7C15)
+        .wrapping_add(dim as u64);
+    let mut rng = ChaCha12Rng::seed_from_u64(seed);
+
+    let columns: Vec<Vec<f64>> = (0..dim)
+        .map(|_| {
+            let mut col: Vec<f64> = (0..n)
+                .map(|i| {
+                    let lo = i as f64 / n as f64;
+                    let hi = (i + 1) as f64 / n as f64;
+                    lo + rng.random::<f64>() * (hi - lo)
+                })
+                .collect();
+            // Fisher-Yates shuffle
+            for i in (1..n).rev() {
+                let j = rng.random_range(0..=i);
+                col.swap(i, j);
+            }
+            col
+        })
+        .collect();
+
+    (0..n)
+        .map(|j| columns.iter().map(|col| col[j]).collect())
+        .collect()
 }
 
 /// Flatten A, B, AB_0..AB_{P-1} into one batch, evaluate all in parallel,
@@ -253,6 +314,7 @@ fn percentile_ci(samples: &mut [f64], alpha: f64) -> (f64, f64) {
 
 /// Results of a Sobol variance-based sensitivity analysis.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[must_use = "Sobol analysis result is discarded — this ran thousands of engine evaluations"]
 pub struct SobolResult {
     pub parameters: Vec<SobolParameterResult>,
     /// Sum of all first-order indices (close to 1.0 for additive models).
@@ -266,6 +328,7 @@ pub struct SobolResult {
 
 impl SobolResult {
     /// Parameters ranked by descending S₁ (most influential first-order effect first).
+    #[must_use]
     pub fn rankings(&self) -> Vec<&SobolParameterResult> {
         let mut r: Vec<_> = self.parameters.iter().collect();
         r.sort_by(|a, b| b.s1.partial_cmp(&a.s1).unwrap_or(std::cmp::Ordering::Equal));
@@ -273,6 +336,7 @@ impl SobolResult {
     }
 
     /// Parameters ranked by descending Sₜ (most influential total effect first).
+    #[must_use]
     pub fn rankings_total(&self) -> Vec<&SobolParameterResult> {
         let mut r: Vec<_> = self.parameters.iter().collect();
         r.sort_by(|a, b| b.st.partial_cmp(&a.st).unwrap_or(std::cmp::Ordering::Equal));
@@ -297,6 +361,10 @@ pub struct SobolParameterResult {
 }
 
 /// Run a complete Sobol variance-based sensitivity analysis.
+///
+/// Supports up to 30 parameters (the maximum dimension covered by Joe-Kuo
+/// direction numbers). For ≤15 parameters, uses column-split Saltelli
+/// matrices; for 16–30, uses row-split.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
@@ -312,6 +380,12 @@ pub fn sobol_analysis(
     config.validate()?;
     if space.dim() == 0 {
         return Err(SensitivityError::EmptyParameterSpace);
+    }
+    if space.dim() > crate::sobol_sequence::MAX_DIM {
+        return Err(SensitivityError::TooManyParameters {
+            max: crate::sobol_sequence::MAX_DIM,
+            actual: space.dim(),
+        });
     }
 
     let n = config.n_samples as usize;
@@ -826,5 +900,147 @@ mod tests {
                 "param {p}: ST CI lower {st_lo} > upper {st_hi}"
             );
         }
+    }
+
+    // --- Dual-strategy (column-split / row-split) tests ---
+
+    #[test]
+    fn row_split_produces_valid_matrices() {
+        let n = 64;
+        let dim = 20; // 2*20 = 40 > 30, forces row-split
+        let (a, b, ab) = build_saltelli_matrices(n, dim).unwrap();
+
+        assert_eq!(a.len(), n, "A should have N rows");
+        assert_eq!(b.len(), n, "B should have N rows");
+        for (i, row) in a.iter().enumerate() {
+            assert_eq!(row.len(), dim, "A row {i} should have P columns");
+        }
+        for (i, row) in b.iter().enumerate() {
+            assert_eq!(row.len(), dim, "B row {i} should have P columns");
+        }
+        assert_eq!(ab.len(), dim, "AB should have P matrices");
+        for (i, ab_i) in ab.iter().enumerate() {
+            assert_eq!(ab_i.len(), n, "AB_{i} should have N rows");
+            for (j, row) in ab_i.iter().enumerate() {
+                assert_eq!(row.len(), dim, "AB_{i} row {j} should have P columns");
+            }
+        }
+
+        // Verify AB_i column replacement property
+        for i in 0..dim {
+            for j in 0..n {
+                assert!(
+                    (ab[i][j][i] - b[j][i]).abs() < f64::EPSILON,
+                    "AB_{i} row {j} column {i} should match B"
+                );
+                for k in 0..dim {
+                    if k != i {
+                        assert!(
+                            (ab[i][j][k] - a[j][k]).abs() < f64::EPSILON,
+                            "AB_{i} row {j} column {k} should match A"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn row_split_ishigami() {
+        let n = 4096;
+        let total_dim = 16; // triggers row-split (2*16 = 32 > 30)
+        let pi = std::f64::consts::PI;
+
+        let (a, b, ab) = build_saltelli_matrices(n, total_dim).unwrap();
+
+        // Map first 3 dims to [-pi, pi], ignore the rest (constant output)
+        let map_to_pi =
+            |row: &[f64]| -> Vec<f64> { row.iter().map(|&u| -pi + 2.0 * pi * u).collect() };
+
+        let f_a: Vec<f64> = a.iter().map(|row| ishigami(&map_to_pi(row))).collect();
+        let f_b: Vec<f64> = b.iter().map(|row| ishigami(&map_to_pi(row))).collect();
+        let f_ab: Vec<Vec<f64>> = ab
+            .iter()
+            .map(|ab_i| ab_i.iter().map(|row| ishigami(&map_to_pi(row))).collect())
+            .collect();
+
+        let indices = compute_indices(&f_a, &f_b, &f_ab, total_dim);
+
+        // First 3 dims: same expectations as column-split Ishigami test
+        let (s1_x1, st_x1) = indices[0];
+        let (s1_x2, st_x2) = indices[1];
+        let (s1_x3, st_x3) = indices[2];
+
+        assert!(
+            (s1_x1 - 0.3139).abs() < 0.06,
+            "S1(x1) should be ~0.3139, got {s1_x1}"
+        );
+        assert!(
+            (s1_x2 - 0.4424).abs() < 0.06,
+            "S1(x2) should be ~0.4424, got {s1_x2}"
+        );
+        assert!(s1_x3.abs() < 0.06, "S1(x3) should be ~0, got {s1_x3}");
+
+        assert!(
+            (st_x1 - 0.5576).abs() < 0.08,
+            "ST(x1) should be ~0.5576, got {st_x1}"
+        );
+        assert!(
+            (st_x2 - 0.4424).abs() < 0.06,
+            "ST(x2) should be ~0.4424, got {st_x2}"
+        );
+        assert!(
+            (st_x3 - 0.2437).abs() < 0.06,
+            "ST(x3) should be ~0.2437, got {st_x3}"
+        );
+
+        // Dummy dimensions (3..16) should have near-zero indices
+        for (i, &(s1, st)) in indices.iter().enumerate().skip(3) {
+            assert!(
+                s1.abs() < 0.06,
+                "S1(x{i}) should be ~0 for dummy dim, got {s1}"
+            );
+            assert!(
+                st.abs() < 0.06,
+                "ST(x{i}) should be ~0 for dummy dim, got {st}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_too_many_parameters() {
+        let result = build_saltelli_matrices(64, 31);
+        assert!(
+            matches!(
+                result,
+                Err(SensitivityError::TooManyParameters {
+                    max: 30,
+                    actual: 31
+                })
+            ),
+            "expected TooManyParameters {{ max: 30, actual: 31 }}, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn column_split_used_for_small_dim() {
+        // 2*5 = 10 <= 30: column-split
+        let result = build_saltelli_matrices(64, 5);
+        assert!(result.is_ok(), "dim=5 should use column-split: {result:?}");
+
+        // 2*15 = 30 <= 30: column-split
+        let result = build_saltelli_matrices(64, 15);
+        assert!(result.is_ok(), "dim=15 should use column-split: {result:?}");
+    }
+
+    #[test]
+    fn row_split_used_for_large_dim() {
+        // 2*16 = 32 > 30: row-split
+        let result = build_saltelli_matrices(64, 16);
+        assert!(result.is_ok(), "dim=16 should use row-split: {result:?}");
+
+        // dim=30 == MAX_DIM: row-split
+        let result = build_saltelli_matrices(64, 30);
+        assert!(result.is_ok(), "dim=30 should use row-split: {result:?}");
     }
 }

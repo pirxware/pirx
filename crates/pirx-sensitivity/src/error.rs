@@ -68,4 +68,7 @@ pub enum SensitivityError {
 
     #[error("parameter '{param}' has negative bound: min={min}")]
     NegativeBound { param: String, min: f64 },
+
+    #[error("too many parameters for Sobol analysis: max supported is {max}, got {actual}")]
+    TooManyParameters { max: usize, actual: usize },
 }

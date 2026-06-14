@@ -16,6 +16,7 @@ use crate::{
 
 /// Results of a Morris elementary effects analysis.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[must_use = "Morris screening result is discarded — this ran hundreds of engine evaluations"]
 pub struct MorrisResult {
     pub parameters: Vec<MorrisParameterResult>,
     pub evaluations: u64,
@@ -24,6 +25,7 @@ pub struct MorrisResult {
 
 impl MorrisResult {
     /// Parameters ranked by descending mu_star (most influential first).
+    #[must_use]
     pub fn rankings(&self) -> Vec<&MorrisParameterResult> {
         let mut ranked: Vec<_> = self.parameters.iter().collect();
         ranked.sort_by(|a, b| {
@@ -51,7 +53,7 @@ pub struct MorrisParameterResult {
 
 impl MorrisConfig {
     /// Validate Morris configuration parameters.
-    pub fn validate(self) -> Result<(), SensitivityError> {
+    pub fn validate(&self) -> Result<(), SensitivityError> {
         if self.trajectories < 2 {
             return Err(SensitivityError::InsufficientTrajectories(
                 self.trajectories,

@@ -202,8 +202,9 @@ pub(crate) fn compute_variance(f_a: &[f64], f_b: &[f64]) -> f64 {
 
 /// Compute (S₁ᵢ, Sₜᵢ) for each parameter from pre-computed function values.
 ///
-/// Jansen estimator (Saltelli 2010):
+/// Saltelli (2010) estimator for S₁:
 ///   S₁ᵢ = [(1/N) Σ f_B[j] × (f_ABi[j] - f_A[j])] / Var(Y)
+/// Jansen (1999) estimator for Sₜ:
 ///   Sₜᵢ = [(1/2N) Σ (f_A[j] - f_ABi[j])²] / Var(Y)
 #[allow(clippy::cast_precision_loss, clippy::indexing_slicing)]
 pub(crate) fn compute_indices(

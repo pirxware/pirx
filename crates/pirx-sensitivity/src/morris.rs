@@ -92,18 +92,11 @@ pub(crate) fn generate_trajectories(
     rng: &mut ChaCha12Rng,
 ) -> Vec<MorrisTrajectory> {
     let delta = delta_value(config.levels);
-    let grid_step = 1.0 / (f64::from(config.levels) - 1.0);
+    let levels_minus_1 = f64::from(config.levels - 1);
 
-    // Base grid: {0, step, 2*step, ..., 1}
-    let base_grid: Vec<f64> = {
-        let mut vals = Vec::new();
-        let mut v = 0.0;
-        while v <= 1.0 + 1e-12 {
-            vals.push(v);
-            v += grid_step;
-        }
-        vals
-    };
+    let base_grid: Vec<f64> = (0..config.levels)
+        .map(|i| f64::from(i) / levels_minus_1)
+        .collect();
 
     (0..config.trajectories)
         .map(|_| {

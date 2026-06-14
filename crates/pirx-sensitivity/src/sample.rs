@@ -43,7 +43,7 @@ pub fn evaluate_point(
     point_index: usize,
     config: &EvalConfig,
 ) -> Result<f64, SensitivityError> {
-    let physical = space.map_point(unit_point);
+    let physical = space.map_point(unit_point)?;
     let hw = mutate_hw_multi(base_hw, space, &physical)?;
     let factory_count = hw.factory.count().min(u32::from(u16::MAX)) as u16;
 

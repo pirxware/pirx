@@ -12,7 +12,7 @@ pub mod mutate;
 pub mod parameter;
 pub mod sample;
 pub mod sobol;
-pub mod sobol_sequence;
+pub(crate) mod sobol_sequence;
 
 pub mod config;
 

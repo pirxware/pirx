@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::SensitivityError;
 
 /// All sweepable hardware model fields.
-pub const KNOWN_PARAMS: &[&str] = &[
+pub(crate) const KNOWN_PARAMS: &[&str] = &[
     "code_distance",
     "physical_error_rate",
     "error_correction_threshold",
@@ -122,13 +122,19 @@ impl ParameterSpace {
     }
 
     /// Map a full unit-interval point to physical values.
-    pub fn map_point(&self, unit_point: &[f64]) -> Vec<f64> {
-        (0..self.dim())
+    pub fn map_point(&self, unit_point: &[f64]) -> Result<Vec<f64>, SensitivityError> {
+        if unit_point.len() != self.dim() {
+            return Err(SensitivityError::DimensionMismatch {
+                expected: self.dim(),
+                actual: unit_point.len(),
+            });
+        }
+        Ok((0..self.dim())
             .map(|i| {
                 #[allow(clippy::indexing_slicing)]
                 self.map_unit_to_physical(i, unit_point[i])
             })
-            .collect()
+            .collect())
     }
 
     /// Full validation: internal consistency + compatibility with hardware model.
